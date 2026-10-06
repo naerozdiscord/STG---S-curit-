@@ -1310,6 +1310,8 @@ class ProofReviewView(discord.ui.View):
 async def on_ready():
     print(f"✅ Bot connecté : {bot.user}")
 
+print("SETUP TICKET PRESENT :", bot.get_command("setup_ticket"))    
+
 print("COMMANDES CHARGEES :")
 for command in bot.commands:
     print(f"- +{command.name}")
