@@ -38,6 +38,16 @@ PROOF_ROLE_ID = 1551072338567499909
 # Salon où seront annoncées les validations
 PROOF_SUCCESS_CHANNEL_ID = 1551731497537376396
 
+# ============================================================
+# CONFIGURATION DU SYSTÈME DE TICKETS VIP
+# ============================================================
+
+# Catégorie dans laquelle les tickets seront créés
+TICKET_CATEGORY_ID = 1550556817526882464
+
+# Rôle qui sera ping à l'ouverture d'un ticket
+TICKET_STAFF_ROLE_ID = 1550544412499771504
+
 
 # Préfixe pour les commandes
 intents = discord.Intents.default()
@@ -564,6 +574,223 @@ async def setup(ctx):
     )
 
 # ============================================================
+# SYSTÈME DE TICKETS VIP
+# ============================================================
+
+class CloseTicketView(discord.ui.View):
+
+    def __init__(self):
+        super().__init__(timeout=None)
+
+    @discord.ui.button(
+        label="Fermer le ticket",
+        emoji="🔒",
+        style=discord.ButtonStyle.danger,
+        custom_id="ticket_close"
+    )
+    async def close_ticket(
+        self,
+        interaction: discord.Interaction,
+        button: discord.ui.Button
+    ):
+
+        if not interaction.channel or not interaction.channel.name.startswith("ticket-"):
+            await interaction.response.send_message(
+                "❌ Ce salon n'est pas un ticket.",
+                ephemeral=True
+            )
+            return
+
+        # Seuls le créateur du ticket ou le rôle staff peuvent le fermer.
+        is_staff = any(role.id == TICKET_STAFF_ROLE_ID for role in interaction.user.roles)
+        is_owner = interaction.channel.name == f"ticket-{interaction.user.id}"
+
+        if not is_staff and not is_owner:
+            await interaction.response.send_message(
+                "❌ Tu n'as pas la permission de fermer ce ticket.",
+                ephemeral=True
+            )
+            return
+
+        await interaction.response.send_message(
+            "🔒 **Le ticket va être fermé...**",
+            ephemeral=True
+        )
+
+        await asyncio.sleep(2)
+
+        try:
+            await interaction.channel.delete(
+                reason=f"Ticket fermé par {interaction.user}"
+            )
+        except discord.Forbidden:
+            pass
+
+
+class TicketView(discord.ui.View):
+
+    def __init__(self):
+        super().__init__(timeout=None)
+
+    @discord.ui.button(
+        label="Acheter l'accès (1€)",
+        emoji="🔥",
+        style=discord.ButtonStyle.danger,
+        custom_id="ticket_buy_access"
+    )
+    async def buy_access(
+        self,
+        interaction: discord.Interaction,
+        button: discord.ui.Button
+    ):
+
+        guild = interaction.guild
+        member = interaction.user
+
+        if guild is None:
+            return
+
+        # Empêche la création de plusieurs tickets pour la même personne.
+        existing_ticket = discord.utils.get(
+            guild.text_channels,
+            name=f"ticket-{member.id}"
+        )
+
+        if existing_ticket:
+            await interaction.response.send_message(
+                f"❌ Tu as déjà un ticket ouvert : {existing_ticket.mention}",
+                ephemeral=True
+            )
+            return
+
+        category = guild.get_channel(TICKET_CATEGORY_ID)
+
+        if category is None or not isinstance(category, discord.CategoryChannel):
+            await interaction.response.send_message(
+                "❌ La catégorie des tickets est introuvable ou invalide.",
+                ephemeral=True
+            )
+            return
+
+        staff_role = guild.get_role(TICKET_STAFF_ROLE_ID)
+
+        if staff_role is None:
+            await interaction.response.send_message(
+                "❌ Le rôle staff est introuvable.",
+                ephemeral=True
+            )
+            return
+
+        bot_member = guild.me
+        if bot_member is None:
+            await interaction.response.send_message(
+                "❌ Impossible de récupérer le bot sur le serveur.",
+                ephemeral=True
+            )
+            return
+
+        overwrites = {
+            guild.default_role: discord.PermissionOverwrite(
+                view_channel=False
+            ),
+            member: discord.PermissionOverwrite(
+                view_channel=True,
+                send_messages=True,
+                read_message_history=True,
+                attach_files=True,
+                embed_links=True
+            ),
+            staff_role: discord.PermissionOverwrite(
+                view_channel=True,
+                send_messages=True,
+                read_message_history=True,
+                attach_files=True,
+                embed_links=True,
+                manage_messages=True
+            ),
+            bot_member: discord.PermissionOverwrite(
+                view_channel=True,
+                send_messages=True,
+                read_message_history=True,
+                manage_channels=True,
+                manage_messages=True
+            )
+        }
+
+        try:
+            ticket = await guild.create_text_channel(
+                name=f"ticket-{member.id}",
+                category=category,
+                overwrites=overwrites,
+                reason=f"Ticket VIP ouvert par {member}"
+            )
+        except discord.Forbidden:
+            await interaction.response.send_message(
+                "❌ Je n'ai pas les permissions nécessaires pour créer le ticket.",
+                ephemeral=True
+            )
+            return
+
+        await interaction.response.send_message(
+            f"🎟️ **Ton ticket a été créé :** {ticket.mention}",
+            ephemeral=True
+        )
+
+        embed = discord.Embed(
+            title="🔓 DÉBLOQUE LE CONTENUS",
+            description=(
+                "💳 **Ton ticket est ouvert !**\n\n"
+                f"👤 **Client :** {member.mention}\n"
+                f"🎟️ **Ticket :** {ticket.mention}\n\n"
+                "💰 **Accès VIP : 1€**\n\n"
+                "📩 Un membre du staff va venir prendre en charge ta demande.\n\n"
+                "⚠️ **Ne ferme pas le ticket avant d'avoir terminé ta demande.**"
+            ),
+            color=discord.Color.from_str("#333333")
+        )
+        embed.set_thumbnail(url=member.display_avatar.url)
+        embed.set_footer(text="VIP Access • Ticket privé")
+
+        await ticket.send(
+            content=(
+                f"<@&{TICKET_STAFF_ROLE_ID}>\n\n"
+                "💳 **DÉBLOQUE LE CONTENUS** 🔐\n"
+                f"📨 Ton ticket est ouvert : {ticket.mention}\n\n"
+                f"👁️ **Only you can see this** • {member.mention}"
+            ),
+            embed=embed,
+            view=CloseTicketView(),
+            allowed_mentions=discord.AllowedMentions(
+                roles=True,
+                users=True
+            )
+        )
+
+
+@bot.command()
+@commands.has_permissions(administrator=True)
+async def ticket(ctx):
+    """Envoie le panneau d'achat VIP avec le bouton pour ouvrir un ticket."""
+
+    embed = discord.Embed(
+        title="🏆 Achat VIP",
+        description=(
+            "🥇 **Clique sur le bouton ci-dessous pour ouvrir**\n"
+            "un ticket et obtenir ton accès VIP !\n\n"
+            "💳 **Accès VIP : 1€**\n\n"
+            "📩 Un membre du staff prendra ensuite en charge ta demande."
+        ),
+        color=discord.Color.from_str("#333333")
+    )
+    embed.set_footer(text="VIP Access • 1€")
+
+    await ctx.send(
+        embed=embed,
+        view=TicketView()
+    )
+
+
+# ============================================================
 # INITIALISATION DES BOUTONS PERSISTANTS
 # ============================================================
 
@@ -578,6 +805,16 @@ async def setup_hook():
     # Boutons VALIDER / REFUSER
     bot.add_view(
         ProofReviewView()
+    )
+
+    # Bouton d'achat VIP
+    bot.add_view(
+        TicketView()
+    )
+
+    # Bouton de fermeture des tickets
+    bot.add_view(
+        CloseTicketView()
     )
 
 
