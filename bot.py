@@ -45,7 +45,7 @@ PROOF_SUCCESS_CHANNEL_ID = 1551731497537376396
 # Catégorie dans laquelle les tickets seront créés
 TICKET_CATEGORY_ID = 1550556817526882464
 
-# Rôle qui sera ping à l'ouverture d'un ticket
+# Rôle staff qui sera autorisé à voir les tickets et pingé à leur ouverture
 TICKET_STAFF_ROLE_ID = 1550544412499771504
 
 
@@ -117,7 +117,7 @@ async def move(ctx, member: discord.Member, channel: discord.VoiceChannel):
 @bot.command()
 @commands.has_permissions(manage_messages=True)
 async def tempmute(ctx, member: discord.Member, duration: int):
-    mute_role = get(ctx.guild.roles, name="Muted")
+    mute_role = discord.utils.get(ctx.guild.roles, name="Muted")
     
     if not mute_role:
         perms = discord.Permissions(send_messages=False, speak=False)
@@ -222,6 +222,18 @@ async def liste(ctx):
     embed.add_field(name="⚒️ Commandes de Modération", value=mod_value[:1024], inline=False)
     if len(mod_value) > 1024:
         embed.add_field(name="⚒️ Commandes de Modération (suite)", value=mod_value[1024:], inline=False)
+
+    # Catégorie : 🎟️ Commandes Tickets
+    embed.add_field(
+        name="🎟️ Commandes Tickets",
+        value=(
+            "`+setup_ticket` → Installe le panneau pour ouvrir un ticket VIP.\n"
+            "🛒 Le bouton crée automatiquement un salon privé dans la catégorie tickets.\n"
+            "👮 Le rôle staff est pingé à l'ouverture du ticket.\n"
+            "🔒 Un bouton permet de fermer le ticket."
+        ),
+        inline=False
+    )
 
     # Catégorie : 🎲 Commandes Diverses
     embed.add_field(
@@ -441,7 +453,7 @@ async def derank(ctx, member: discord.Member):
 @bot.command()
 @commands.has_permissions(manage_roles=True)
 async def mute(ctx, member: discord.Member, reason=None, duration: str = None):
-    mute_role = get(ctx.guild.roles, name="Muted")
+    mute_role = discord.utils.get(ctx.guild.roles, name="Muted")
     if not mute_role:
         perms = discord.Permissions(send_messages=False, speak=False)
         mute_role = await ctx.guild.create_role(name="Muted", permissions=perms)
@@ -462,7 +474,7 @@ async def mute(ctx, member: discord.Member, reason=None, duration: str = None):
 @bot.command()
 @commands.has_permissions(manage_roles=True)
 async def unmute(ctx, member: discord.Member):
-    mute_role = get(ctx.guild.roles, name="Muted")
+    mute_role = discord.utils.get(ctx.guild.roles, name="Muted")
     if mute_role in member.roles:
         await member.remove_roles(mute_role)
         await ctx.send(f"🔊 {member.mention} a été démuté.")
@@ -508,72 +520,6 @@ async def tempban(ctx, member: discord.Member, duration: str, *, reason=None):
 
 
 # ============================================================
-# COMMANDE POUR INSTALLER LE PANNEAU
-# ============================================================
-
-
-
-
-@bot.command()
-@commands.has_permissions(administrator=True)
-async def setup(ctx):
-
-    # =========================
-    # COULEUR DE L'EMBED
-    # =========================
-    embed = discord.Embed(
-        title=" TU VEUX ACCEDER AU CONTENUS EXCLUSIFS ?",
-        description=(
-            "\n\n"
-            "<a:verifiedred:1552279526413828149> **Suis simplement les instructions ci-dessous :**\n\n"
-            "<:cerise:1554950602088382634> Va sur **TikTok**\n"
-            "<:message:1554950656392044726> Recherche  **serveur discord br**\n"
-            "<:langue:1554950565828497508> Ouvre **10 vidéos différentes**\n"
-            "<:texte:1554952296683544616> Commente sous chaque vidéo\n\n"
-            " /stgfr pour du contenue exclusif ! \n\n"
-
-            "━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
-            "<:18:1554952122473259018> **Une fois les 10 preuves terminées :**\n"
-            "Clique sur le bouton ci-dessous et envoie tes **10 images**.\n\n"
-            "<:exclamation:1554958049536380999> Les anciennes preuves ou les fausses preuves "
-            "peuvent entraîner un refus."
-        ),
-        color=discord.Color.from_str("#333333")
-    )
-
-    # =========================
-    # BANNIÈRE
-    # =========================
-    file = discord.File(
-        "exclusifs.png",
-        filename="exclusifs.png"
-    )
-
-    embed.set_image(
-        url="attachment://exclusifs.png"
-    )
-
-    # =========================
-    # FOOTER
-    # =========================
-    embed.set_footer(
-        text=" 10 images obligatoires • Vérification par le staff"
-    )
-
-    # =========================
-    # ENVOI
-    # =========================
-    await ctx.send(
-        embed=embed,
-        file=file,
-        view=ProofPanelView()
-    )
-
-    await ctx.send(
-        f"<:point:1554955936609865778> **Panneau installé dans {ctx.channel.mention}.**"
-    )
-
-# ============================================================
 # SYSTÈME DE TICKETS VIP
 # ============================================================
 
@@ -593,19 +539,24 @@ class CloseTicketView(discord.ui.View):
         interaction: discord.Interaction,
         button: discord.ui.Button
     ):
-
-        if not interaction.channel or not interaction.channel.name.startswith("ticket-"):
+        if not interaction.channel.name.startswith("ticket-"):
             await interaction.response.send_message(
                 "❌ Ce salon n'est pas un ticket.",
                 ephemeral=True
             )
             return
 
-        # Seuls le créateur du ticket ou le rôle staff peuvent le fermer.
-        is_staff = any(role.id == TICKET_STAFF_ROLE_ID for role in interaction.user.roles)
-        is_owner = interaction.channel.name == f"ticket-{interaction.user.id}"
+        # Seul le membre ayant ouvert le ticket ou le staff peut le fermer.
+        staff_role = interaction.guild.get_role(TICKET_STAFF_ROLE_ID)
+        is_staff = staff_role in interaction.user.roles if staff_role else False
+        owner_id = None
 
-        if not is_staff and not is_owner:
+        try:
+            owner_id = int(interaction.channel.name.split("ticket-", 1)[1])
+        except (ValueError, IndexError):
+            pass
+
+        if interaction.user.id != owner_id and not is_staff and not interaction.user.guild_permissions.manage_channels:
             await interaction.response.send_message(
                 "❌ Tu n'as pas la permission de fermer ce ticket.",
                 ephemeral=True
@@ -613,10 +564,9 @@ class CloseTicketView(discord.ui.View):
             return
 
         await interaction.response.send_message(
-            "🔒 **Le ticket va être fermé...**",
+            "🔒 Le ticket va être fermé...",
             ephemeral=True
         )
-
         await asyncio.sleep(2)
 
         try:
@@ -643,14 +593,13 @@ class TicketView(discord.ui.View):
         interaction: discord.Interaction,
         button: discord.ui.Button
     ):
-
         guild = interaction.guild
         member = interaction.user
 
         if guild is None:
             return
 
-        # Empêche la création de plusieurs tickets pour la même personne.
+        # Empêche un utilisateur d'avoir plusieurs tickets ouverts.
         existing_ticket = discord.utils.get(
             guild.text_channels,
             name=f"ticket-{member.id}"
@@ -664,7 +613,6 @@ class TicketView(discord.ui.View):
             return
 
         category = guild.get_channel(TICKET_CATEGORY_ID)
-
         if category is None or not isinstance(category, discord.CategoryChannel):
             await interaction.response.send_message(
                 "❌ La catégorie des tickets est introuvable ou invalide.",
@@ -673,18 +621,9 @@ class TicketView(discord.ui.View):
             return
 
         staff_role = guild.get_role(TICKET_STAFF_ROLE_ID)
-
         if staff_role is None:
             await interaction.response.send_message(
                 "❌ Le rôle staff est introuvable.",
-                ephemeral=True
-            )
-            return
-
-        bot_member = guild.me
-        if bot_member is None:
-            await interaction.response.send_message(
-                "❌ Impossible de récupérer le bot sur le serveur.",
                 ephemeral=True
             )
             return
@@ -708,14 +647,16 @@ class TicketView(discord.ui.View):
                 embed_links=True,
                 manage_messages=True
             ),
-            bot_member: discord.PermissionOverwrite(
+        }
+
+        if guild.me:
+            overwrites[guild.me] = discord.PermissionOverwrite(
                 view_channel=True,
                 send_messages=True,
                 read_message_history=True,
                 manage_channels=True,
                 manage_messages=True
             )
-        }
 
         try:
             ticket = await guild.create_text_channel(
@@ -732,56 +673,61 @@ class TicketView(discord.ui.View):
             return
 
         await interaction.response.send_message(
-            f"🎟️ **Ton ticket a été créé :** {ticket.mention}",
+            f"🎟️ Ton ticket a été créé : {ticket.mention}",
             ephemeral=True
         )
 
         embed = discord.Embed(
             title="🔓 DÉBLOQUE LE CONTENUS",
             description=(
-                "💳 **Ton ticket est ouvert !**\n\n"
-                f"👤 **Client :** {member.mention}\n"
-                f"🎟️ **Ticket :** {ticket.mention}\n\n"
-                "💰 **Accès VIP : 1€**\n\n"
-                "📩 Un membre du staff va venir prendre en charge ta demande.\n\n"
+                "💳 **Ton ticket est ouvert !**\\n\\n"
+                f"👤 **Client :** {member.mention}\\n"
+                f"🎟️ **Ticket :** {ticket.mention}\\n\\n"
+                "💰 **Accès VIP : 1€**\\n\\n"
+                "📩 Un membre du staff va venir prendre en charge ta demande.\\n\\n"
                 "⚠️ **Ne ferme pas le ticket avant d'avoir terminé ta demande.**"
             ),
-            color=discord.Color.from_str("#333333")
+            color=0xE60000
         )
-        embed.set_thumbnail(url=member.display_avatar.url)
         embed.set_footer(text="VIP Access • Ticket privé")
 
         await ticket.send(
             content=(
-                f"<@&{TICKET_STAFF_ROLE_ID}>\n\n"
-                "💳 **DÉBLOQUE LE CONTENUS** 🔐\n"
-                f"📨 Ton ticket est ouvert : {ticket.mention}\n\n"
+                f"🔔 {staff_role.mention}\\n\\n"
+                f"💳 **DÉBLOQUE LE CONTENUS** 🔐\\n"
+                f"📨 Ton ticket est ouvert : {ticket.mention}\\n\\n"
                 f"👁️ **Only you can see this** • {member.mention}"
             ),
             embed=embed,
             view=CloseTicketView(),
-            allowed_mentions=discord.AllowedMentions(
-                roles=True,
-                users=True
-            )
+            allowed_mentions=discord.AllowedMentions(roles=True, users=True)
         )
+
+
+# ============================================================
+# COMMANDE POUR INSTALLER LE PANNEAU
+# ============================================================
+
+
 
 
 @bot.command()
 @commands.has_permissions(administrator=True)
-async def ticket(ctx):
-    """Envoie le panneau d'achat VIP avec le bouton pour ouvrir un ticket."""
+async def setup_ticket(ctx):
+    """Installe le panneau d'achat VIP et son bouton de création de ticket."""
 
     embed = discord.Embed(
-        title="🏆 Achat VIP",
+        title="🏆 ACHAT VIP",
         description=(
-            "🥇 **Clique sur le bouton ci-dessous pour ouvrir**\n"
-            "un ticket et obtenir ton accès VIP !\n\n"
-            "💳 **Accès VIP : 1€**\n\n"
-            "📩 Un membre du staff prendra ensuite en charge ta demande."
+            "🎟️ **Clique sur le bouton ci-dessous pour ouvrir un ticket**\n"
+            "et obtenir ton accès VIP !\n\n"
+            "💰 **Accès VIP : 1€**\n\n"
+            "📩 Un ticket privé sera créé automatiquement dans la catégorie prévue.\n"
+            "👮 Le staff sera prévenu dès l'ouverture."
         ),
         color=discord.Color.from_str("#333333")
     )
+
     embed.set_footer(text="VIP Access • 1€")
 
     await ctx.send(
@@ -789,6 +735,9 @@ async def ticket(ctx):
         view=TicketView()
     )
 
+    await ctx.send(
+        f"<:point:1554955936609865778> **Panneau tickets installé dans {ctx.channel.mention}.**"
+    )
 
 # ============================================================
 # INITIALISATION DES BOUTONS PERSISTANTS
