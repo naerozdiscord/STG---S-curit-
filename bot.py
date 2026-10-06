@@ -52,6 +52,9 @@ TICKET_STAFF_ROLE_ID = 1550544412499771504
 # Salon vers lequel le bouton principal VIP peut rediriger
 VIP_ACCESS_CHANNEL_ID = 1550556798094811228
 
+# Logo utilisé par le vrai webhook VIP STGFR (à mettre à côté de bot.py)
+STGFR_WEBHOOK_LOGO_PATH = Path(__file__).parent / "stgfr_webhook_logo.png"
+
 
 # Préfixe pour les commandes
 intents = discord.Intents.default()
@@ -824,24 +827,117 @@ async def setup_ticket(ctx):
 @bot.command()
 @commands.has_permissions(administrator=True)
 async def setup_vip_access(ctx):
-    """Installe le panneau VIP dans le salon d'accès au VIP."""
+    """
+    Envoie le panneau VIP sous forme de VRAI message de webhook :
+    - avatar/logo STGFR en haut à gauche
+    - nom STGFR - Sécurité
+    - trait de séparation en haut et en bas
+    - grand titre stylisé avec les emojis personnalisés fournis
+    - contenu VIP complet
+    - boutons/select attachés au MÊME message webhook
+    """
+
+    # Le logo doit être présent dans le même dossier que bot.py sur Railway.
+    if not STGFR_WEBHOOK_LOGO_PATH.exists():
+        await ctx.send(
+            "❌ Le fichier `stgfr_webhook_logo.png` est introuvable à côté de `bot.py`."
+        )
+        return
+
+    try:
+        webhooks = await ctx.channel.webhooks()
+        webhook = discord.utils.get(webhooks, name="STGFR - Sécurité")
+
+        if webhook is None:
+            with open(STGFR_WEBHOOK_LOGO_PATH, "rb") as logo_file:
+                webhook = await ctx.channel.create_webhook(
+                    name="STGFR - Sécurité",
+                    avatar=logo_file.read(),
+                    reason="Webhook panneau VIP STGFR"
+                )
+    except discord.Forbidden:
+        await ctx.send(
+            "❌ Je n'ai pas la permission **Gérer les webhooks** dans ce salon."
+        )
+        return
+    except discord.HTTPException as error:
+        await ctx.send(f"❌ Impossible de créer/récupérer le webhook : `{error}`")
+        return
+
+    # Titre : on utilise les emojis personnalisés réellement fournis.
+    # Les emojis F/R/N/E/W ne nous ont pas été fournis dans le message initial,
+    # donc on ne les invente pas.
+    title_line_1 = (
+        "<:17836minecraftredv:1557097612249669684>"
+        "<:17847minecraftredi:1557097679220252743>"
+        "<:72237minecraftredp:1557097737504165938>"
+        "  "
+        "<:23720minecraftreds:1557097784308535396>"
+        "<:94054minecraftredt:1557097850851164280>"
+        "<:54257minecraftredg:1557097897864986717>"
+    )
+
+    description = (
+        "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+        f"{title_line_1}\n"
+        "**STGFR VIP NEW GEN**\n\n"
+        "Après plusieurs années de développement, découvrez la toute nouvelle version du VIP STG.\n"
+        "Une offre exclusive, disponible uniquement sur STG FR<a:verifiedred:1552279526413828149>, "
+        "conçue pour vous donner accès à tout notre contenu premium.\n\n"
+        "<a:978859redcrown:1557092090574413975>  **Débloque immédiatement :**\n"
+        "<:point:1554955936609865778> <:18:1554952122473259018>   "
+        "Vocaux S*XCAM avec nos <@&1550556760622899361>\n"
+        "<:point:1554955936609865778> <:cerise:1554950602088382634>  "
+        "300 000+ contenus exclusifs sur notre espace privé VIP.\n"
+        "<:point:1554955936609865778> <:langue:1554950565828497508>   "
+        "Accès au groupe Snapchat Showcam (places limitées).\n"
+        "<:point:1554955936609865778> <:14489redheadadminroleicon:1557092022563635361>   "
+        "Vidéos en avant-première : compilations, événements, backstage etc.\n"
+        "<:point:1554955936609865778> <:texte:1554952296683544616>   "
+        "Images et video sans aucune restriction.\n"
+        "<:point:1554955936609865778> <:tiktok:1557091493649588254>  "
+        "Swipe infini dans le ⁠Aucun accès accès a tout le contenu\n"
+        "<:point:1554955936609865778> <:62392viprubyshiny:1557092189463388160>  "
+        "Accès a tout les premium et vip accès de tout les serveur Discord\n\n"
+        "<:827263redrules:1557092326256418816>  **Pourquoi passer VIP ?**\n"
+        "<:exclamation:1554958049536380999>   "
+        "Seulement **1 €** pour débloquer l'intégralité des avantages.\n\n"
+        "<:lestenebreswlh:1557090864684212275>   "
+        "Tu soutiens directement l'évolution de STGFR et le développement de nouveaux événements et fonctionnalités.\n\n"
+        "<:couronne:1554951807367913583>    **Rejoins le VIP dès maintenant !**\n"
+        "Ouvre un ticket VIP juste ci-dessous et profite immédiatement de tous les avantages.\n\n"
+        "**Des centaines de membres nous font déjà confiance.**\n"
+        "Retrouve leurs avis dans <#1550556799051108475> ⁠ (30 avis par jour)\n\n"
+        "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+    )
 
     embed = discord.Embed(
-        title="💳 ACHÈTE DÈS MAINTENANT TON VIP",
-        description=(
-            "• +2500 influenceuses\n"
-            "• +80000 contenus\n"
-            "• Ajouts de 500 contenus par jours\n\n"
-            "**Crée un ticket en cliquant sur le bouton ci-dessous pour acheter le VIP à seulement 1 euro, et voir ce qu'il contient.**"
-        ),
+        description=description,
         color=discord.Color.from_str("#333333")
     )
     embed.set_footer(text="STGFR • VIP • 1€")
 
-    await ctx.send(embed=embed, view=TicketView())
-    await ctx.send(
-        f"<:point:1554955936609865778> **Embed VIP STGFR installé dans {ctx.channel.mention}.**"
-    )
+    try:
+        await webhook.send(
+            content=None,
+            username="STGFR - Sécurité",
+            embed=embed,
+            view=TicketView(),
+            allowed_mentions=discord.AllowedMentions(
+                roles=True,
+                users=True
+            ),
+            wait=True
+        )
+    except discord.HTTPException as error:
+        await ctx.send(f"❌ Impossible d'envoyer le webhook VIP : `{error}`")
+        return
+
+    # On supprime le message de commande pour laisser uniquement le webhook.
+    try:
+        await ctx.message.delete()
+    except (discord.Forbidden, discord.HTTPException):
+        pass
 
 
 # ============================================================
