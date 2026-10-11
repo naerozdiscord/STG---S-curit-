@@ -1,6 +1,8 @@
 import discord
 import asyncio
 import os
+import re
+import aiohttp
 from pathlib import Path
 from dotenv import load_dotenv
 
@@ -171,6 +173,92 @@ async def nickname(ctx, member: discord.Member, *, new_nickname: str):
 
 
 
+# ============================================================
+# IMPORTER UN EMOJI DEPUIS UN AUTRE SERVEUR
+# ============================================================
+
+CUSTOM_EMOJI_RE = re.compile(r"^<(?P<animated>a?):(?P<name>[A-Za-z0-9_]{2,32}):(?P<id>\d+)>$")
+
+
+@bot.group(name="emoji", invoke_without_command=True)
+async def emoji_group(ctx):
+    await ctx.send(
+        "Utilisation : `+emoji add <:nom:ID>`\n"
+        "Exemple : `+emoji add <:monemoji:123456789012345678>`"
+    )
+
+
+@emoji_group.command(name="add")
+@commands.has_permissions(manage_emojis_and_stickers=True)
+async def emoji_add(ctx, *, emoji_input: str):
+    """Télécharge un emoji personnalisé et l'ajoute au serveur actuel."""
+    if ctx.guild is None:
+        await ctx.send("❌ Cette commande doit être utilisée dans un serveur.")
+        return
+
+    match = CUSTOM_EMOJI_RE.fullmatch(emoji_input.strip().strip('"\''))
+    if match is None:
+        await ctx.send(
+            "❌ Emoji invalide. Envoie un emoji personnalisé Discord au format "
+            "`<:nom:ID>` ou `<a:nom:ID>` (animé)."
+        )
+        return
+
+    bot_member = ctx.guild.me
+    if bot_member is None or not bot_member.guild_permissions.manage_emojis_and_stickers:
+        await ctx.send(
+            "❌ Je n'ai pas la permission **Gérer les émojis et les autocollants** "
+            "sur ce serveur."
+        )
+        return
+
+    emoji_name = match.group("name")
+    emoji_id = match.group("id")
+    animated = bool(match.group("animated"))
+    extension = "gif" if animated else "png"
+    emoji_url = f"https://cdn.discordapp.com/emojis/{emoji_id}.{extension}?quality=lossless"
+
+    try:
+        timeout = aiohttp.ClientTimeout(total=20)
+        async with aiohttp.ClientSession(timeout=timeout) as session:
+            async with session.get(emoji_url) as response:
+                if response.status != 200:
+                    await ctx.send(
+                        "❌ Impossible de récupérer cet emoji. Vérifie qu'il s'agit "
+                        "bien d'un emoji personnalisé encore accessible."
+                    )
+                    return
+                image_data = await response.read()
+
+        # Limite de sécurité pour éviter les fichiers trop volumineux.
+        if len(image_data) > 256 * 1024:
+            await ctx.send(
+                "❌ Cet emoji dépasse la limite de 256 Ko acceptée par cette commande."
+            )
+            return
+
+        created = await ctx.guild.create_custom_emoji(
+            name=emoji_name,
+            image=image_data,
+            reason=f"Emoji importé par {ctx.author} depuis la commande +emoji add"
+        )
+
+        await ctx.send(f"✅ Emoji {created} ajouté au serveur **{ctx.guild.name}** !")
+
+    except discord.Forbidden:
+        await ctx.send(
+            "❌ Discord a refusé l'ajout. Vérifie que le bot possède la permission "
+            "**Gérer les émojis et les autocollants**."
+        )
+    except discord.HTTPException as error:
+        if getattr(error, "code", None) == 30008:
+            await ctx.send("❌ Ce serveur a atteint sa limite d'émojis personnalisés.")
+        else:
+            await ctx.send(f"❌ Discord n'a pas pu ajouter cet emoji : `{error}`")
+    except aiohttp.ClientError:
+        await ctx.send("❌ Erreur réseau pendant le téléchargement de l'emoji.")
+
+
 # Commande pour afficher les informations d'aide (help)
 @bot.command()
 async def liste(ctx):
@@ -244,6 +332,7 @@ async def liste(ctx):
             "`+server_stats` → Affiche les statistiques du serveur.\n"
             "`+server_info` → Affiche les informations du serveur.\n"
             "`+server_emojis` → Liste les emojis du serveur.\n"
+            "`+emoji add <:nom:ID>` → Importe un emoji personnalisé dans ce serveur.\n"
             "`+uptime` → Affiche le temps de fonctionnement du bot.\n"
             "`+liste` → Affiche cette liste des commandes."
         ),
