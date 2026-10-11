@@ -46,8 +46,8 @@ PROOF_SUCCESS_CHANNEL_ID = 1551731497537376396
 # CONFIGURATION DU PANNEAU VIP
 # ============================================================
 
-# Salon vers lequel le bouton "CLIQUE POUR LE STG VIP" redirige
-VIP_ACCESS_CHANNEL_ID = 1550556798094811228
+# Salon vers lequel le bouton "CLIQUE POUR LE STG VIP" redirige (#🎫・tickets-vip)
+VIP_ACCESS_CHANNEL_ID = 1558853950676148345
 
 # Logo affiché à droite du titre du panneau VIP (à mettre à côté de bot.py)
 STGFR_WEBHOOK_LOGO_PATH = Path(__file__).parent / "stgfr_webhook_logo.png"
@@ -309,7 +309,7 @@ async def liste(ctx):
         name="👑 Panneau VIP",
         value=(
             "`+setup_vip_access` → Installe le panneau STG VIP dans le salon actuel.\n"
-            "🔗 Le bouton **CLIQUE POUR LE STG VIP** redirige vers le salon d'accès."
+            "🔗 Le bouton **CLIQUE POUR LE STG VIP** redirige vers le salon des tickets VIP."
         ),
         inline=False
     )
@@ -673,32 +673,8 @@ async def setup(ctx):
 # Le bouton "CLIQUE POUR LE STG VIP" est un bouton lien : il ouvre
 # directement le salon VIP_ACCESS_CHANNEL_ID (pas de ticket, pas de callback).
 
-class VIPSelectRow(ui.ActionRow):
-    """Menu déroulant du panneau VIP."""
-
-    @ui.select(
-        placeholder="Voir un avant goût du contenu disponible :",
-        custom_id="stg_vip_preview",
-        options=[
-            discord.SelectOption(
-                label="VIP",
-                description="VIP à 1€",
-                emoji="🏆",
-                value="vip"
-            )
-        ]
-    )
-    async def preview(self, interaction: discord.Interaction, select: ui.Select):
-        await interaction.response.send_message(
-            "<a:978859redcrown:1557092090574413975> **STG VIP**\n\n"
-            "Profite des avantages et contenus premium disponibles dans l'espace VIP.\n\n"
-            "💰 **Prix : 1€**",
-            ephemeral=True
-        )
-
-
 class VIPLayout(ui.LayoutView):
-    """Panneau STG VIP : conteneur, séparateurs, bouton lien et menu déroulant."""
+    """Panneau STG VIP : conteneur, séparateurs et bouton lien."""
 
     def __init__(self, channel_url: str = "https://discord.com"):
         super().__init__(timeout=None)
@@ -756,8 +732,6 @@ class VIPLayout(ui.LayoutView):
             ),
         ))
 
-        c.add_item(VIPSelectRow())
-
         self.add_item(c)
 
 
@@ -772,7 +746,7 @@ async def setup_vip_access(ctx):
         )
         return
 
-    # Lien vers le salon VIP (le bouton ouvre ce salon)
+    # Lien vers le salon #🎫・tickets-vip (le bouton ouvre ce salon)
     channel_url = f"https://discord.com/channels/{ctx.guild.id}/{VIP_ACCESS_CHANNEL_ID}"
 
     await ctx.send(
@@ -800,9 +774,6 @@ async def setup_hook():
 
     # Boutons VALIDER / REFUSER
     bot.add_view(ProofReviewView())
-
-    # Menu déroulant du panneau STG VIP (reste actif après un redémarrage)
-    bot.add_view(VIPLayout())
 
 
 @bot.event
