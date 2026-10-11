@@ -8,6 +8,7 @@ from dotenv import load_dotenv
 
 from discord.ext import commands
 from discord.utils import get
+from discord import ui
 from discord.ui import View, Button, button
 from datetime import datetime, timedelta
 
@@ -42,19 +43,13 @@ PROOF_ROLE_ID = 1551072338567499909
 PROOF_SUCCESS_CHANNEL_ID = 1551731497537376396
 
 # ============================================================
-# CONFIGURATION DU SYSTÈME DE TICKETS VIP
+# CONFIGURATION DU PANNEAU VIP
 # ============================================================
 
-# Catégorie dans laquelle les tickets VIP seront créés
-TICKET_CATEGORY_ID = 1550556817526882464
-
-# Rôle staff autorisé à voir les tickets et pingé à leur ouverture
-TICKET_STAFF_ROLE_ID = 1550544412499771504
-
-# Salon vers lequel le bouton principal VIP peut rediriger
+# Salon vers lequel le bouton "CLIQUE POUR LE STG VIP" redirige
 VIP_ACCESS_CHANNEL_ID = 1550556798094811228
 
-# Logo utilisé par le vrai webhook VIP STGFR (à mettre à côté de bot.py)
+# Logo affiché à droite du titre du panneau VIP (à mettre à côté de bot.py)
 STGFR_WEBHOOK_LOGO_PATH = Path(__file__).parent / "stgfr_webhook_logo.png"
 
 
@@ -309,15 +304,12 @@ async def liste(ctx):
     if len(mod_value) > 1024:
         embed.add_field(name="⚒️ Commandes de Modération (suite)", value=mod_value[1024:], inline=False)
 
-    # Catégorie : 🎟️ Commandes Tickets VIP
+    # Catégorie : 👑 Panneau VIP
     embed.add_field(
-        name="🎟️ Commandes Tickets VIP",
+        name="👑 Panneau VIP",
         value=(
-            "`+setup_ticket` → Installe le panneau principal pour acheter le VIP à 1€.\n"
-            "`+setup_vip_access` → Installe le panneau VIP dans le salon d'accès.\n"
-            "🔥 Le bouton ouvre automatiquement un ticket privé.\n"
-            "👮 Le rôle staff est pingé à l'ouverture.\n"
-            "🔒 Le ticket peut être fermé avec le bouton prévu."
+            "`+setup_vip_access` → Installe le panneau STG VIP dans le salon actuel.\n"
+            "🔗 Le bouton **CLIQUE POUR LE STG VIP** redirige vers le salon d'accès."
         ),
         inline=False
     )
@@ -673,200 +665,20 @@ async def setup(ctx):
         f"<:point:1554955936609865778> **Panneau installé dans {ctx.channel.mention}.**"
     )
 
+
 # ============================================================
-# SYSTÈME DE TICKETS VIP
+# PANNEAU STG VIP (Components V2)
 # ============================================================
+# Nécessite discord.py 2.6 ou plus récent.
+# Le bouton "CLIQUE POUR LE STG VIP" est un bouton lien : il ouvre
+# directement le salon VIP_ACCESS_CHANNEL_ID (pas de ticket, pas de callback).
 
-class CloseTicketView(discord.ui.View):
-    """Bouton persistant permettant au propriétaire ou au staff de fermer un ticket."""
+class VIPSelectRow(ui.ActionRow):
+    """Menu déroulant du panneau VIP."""
 
-    def __init__(self):
-        super().__init__(timeout=None)
-
-    @discord.ui.button(
-        label="Fermer le ticket",
-        emoji="🔒",
-        style=discord.ButtonStyle.danger,
-        custom_id="ticket_close"
-    )
-    async def close_ticket(self, interaction: discord.Interaction, button: discord.ui.Button):
-        channel = interaction.channel
-
-        if channel is None or not channel.name.startswith("ticket-"):
-            await interaction.response.send_message(
-                "❌ Ce salon n'est pas un ticket.",
-                ephemeral=True
-            )
-            return
-
-        staff_role = interaction.guild.get_role(TICKET_STAFF_ROLE_ID) if interaction.guild else None
-        is_staff = bool(staff_role and staff_role in interaction.user.roles)
-        is_manager = interaction.user.guild_permissions.manage_channels
-
-        try:
-            owner_id = int(channel.name.split("ticket-", 1)[1])
-        except (ValueError, IndexError):
-            owner_id = None
-
-        if interaction.user.id != owner_id and not is_staff and not is_manager:
-            await interaction.response.send_message(
-                "❌ Tu n'as pas la permission de fermer ce ticket.",
-                ephemeral=True
-            )
-            return
-
-        await interaction.response.send_message(
-            "🔒 **Le ticket va être fermé dans 2 secondes...**",
-            ephemeral=True
-        )
-        await asyncio.sleep(2)
-
-        try:
-            await channel.delete(reason=f"Ticket fermé par {interaction.user}")
-        except discord.Forbidden:
-            pass
-
-
-class TicketView(discord.ui.View):
-    """Panneau VIP persistant : bouton d'achat + menu d'informations."""
-
-    def __init__(self):
-        super().__init__(timeout=None)
-
-    @discord.ui.button(
-        label="🔥 Acheter l'accès 🔐 (1€)",
-        style=discord.ButtonStyle.secondary,
-        custom_id="ticket_buy_access"
-    )
-    async def buy_access(self, interaction: discord.Interaction, button: discord.ui.Button):
-        guild = interaction.guild
-        member = interaction.user
-
-        if guild is None:
-            await interaction.response.send_message(
-                "❌ Cette action doit être utilisée sur un serveur.",
-                ephemeral=True
-            )
-            return
-
-        # Empêche plusieurs tickets VIP simultanés pour la même personne.
-        existing_ticket = discord.utils.get(
-            guild.text_channels,
-            name=f"ticket-{member.id}"
-        )
-        if existing_ticket:
-            await interaction.response.send_message(
-                f"❌ Tu as déjà un ticket ouvert : {existing_ticket.mention}",
-                ephemeral=True
-            )
-            return
-
-        category = guild.get_channel(TICKET_CATEGORY_ID)
-        if category is None or not isinstance(category, discord.CategoryChannel):
-            await interaction.response.send_message(
-                "❌ La catégorie des tickets est introuvable ou invalide.",
-                ephemeral=True
-            )
-            return
-
-        staff_role = guild.get_role(TICKET_STAFF_ROLE_ID)
-        if staff_role is None:
-            await interaction.response.send_message(
-                "❌ Le rôle staff est introuvable.",
-                ephemeral=True
-            )
-            return
-
-        bot_member = guild.me
-        if bot_member is None:
-            await interaction.response.send_message(
-                "❌ Impossible de récupérer le bot sur le serveur.",
-                ephemeral=True
-            )
-            return
-
-        overwrites = {
-            guild.default_role: discord.PermissionOverwrite(
-                view_channel=False
-            ),
-            member: discord.PermissionOverwrite(
-                view_channel=True,
-                send_messages=True,
-                read_message_history=True,
-                attach_files=True,
-                embed_links=True
-            ),
-            staff_role: discord.PermissionOverwrite(
-                view_channel=True,
-                send_messages=True,
-                read_message_history=True,
-                attach_files=True,
-                embed_links=True,
-                manage_messages=True
-            ),
-            bot_member: discord.PermissionOverwrite(
-                view_channel=True,
-                send_messages=True,
-                read_message_history=True,
-                manage_channels=True,
-                manage_messages=True
-            )
-        }
-
-        try:
-            ticket = await guild.create_text_channel(
-                name=f"ticket-{member.id}",
-                category=category,
-                overwrites=overwrites,
-                reason=f"Ticket VIP STGFR ouvert par {member}"
-            )
-        except discord.Forbidden:
-            await interaction.response.send_message(
-                "❌ Je n'ai pas les permissions nécessaires pour créer le ticket.",
-                ephemeral=True
-            )
-            return
-        except discord.HTTPException as error:
-            print(f"❌ Erreur création ticket : {error!r}")
-            await interaction.response.send_message(
-                "❌ Discord a refusé la création du ticket. Vérifie mes permissions.",
-                ephemeral=True
-            )
-            return
-
-        await interaction.response.send_message(
-            f"🎟️ **Ton ticket a été créé :** {ticket.mention}",
-            ephemeral=True
-        )
-
-        ticket_embed = discord.Embed(
-            title="<a:978859redcrown:1557092090574413975> DÉBLOQUE TON VIP STGFR",
-            description=(
-                f"<:point:1554955936609865778> **Client :** {member.mention}\n"
-                f"<:point:1554955936609865778> **Ticket :** {ticket.mention}\n\n"
-                "💰 **Accès VIP : 1€**\n\n"
-                "📩 Un membre du staff va venir prendre en charge ta demande.\n\n"
-                "⚠️ **Ne ferme pas le ticket avant d'avoir terminé ta demande.**"
-            ),
-            color=discord.Color.from_str("#333333")
-        )
-        ticket_embed.set_footer(text="STGFR • VIP Access • Ticket privé")
-
-        await ticket.send(
-            content=(
-                f"🔔 {staff_role.mention}\n\n"
-                "💳 **DÉBLOQUE LE CONTENUS** 🔐\n"
-                f"📨 Ton ticket est ouvert : {ticket.mention}\n\n"
-                f"👁️ **Only you can see this** • {member.mention}"
-            ),
-            embed=ticket_embed,
-            view=CloseTicketView(),
-            allowed_mentions=discord.AllowedMentions(roles=True, users=True)
-        )
-
-    @discord.ui.select(
-        placeholder="Vous avez besoin d'aide ?",
-        custom_id="stgfr_vip_preview",
+    @ui.select(
+        placeholder="Voir un avant goût du contenu disponible :",
+        custom_id="stg_vip_preview",
         options=[
             discord.SelectOption(
                 label="VIP",
@@ -876,153 +688,103 @@ class TicketView(discord.ui.View):
             )
         ]
     )
-    async def vip_preview(self, interaction: discord.Interaction, select: discord.ui.Select):
+    async def preview(self, interaction: discord.Interaction, select: ui.Select):
         await interaction.response.send_message(
-            "<a:978859redcrown:1557092090574413975> **VIP STGFR**\n\n"
+            "<a:978859redcrown:1557092090574413975> **STG VIP**\n\n"
             "Profite des avantages et contenus premium disponibles dans l'espace VIP.\n\n"
             "💰 **Prix : 1€**",
             ephemeral=True
         )
 
 
-@bot.command()
-@commands.has_permissions(administrator=True)
-async def setup_ticket(ctx):
-    """Installe le panneau principal d'achat VIP."""
+class VIPLayout(ui.LayoutView):
+    """Panneau STG VIP : conteneur, séparateurs, bouton lien et menu déroulant."""
 
-    embed = discord.Embed(
-        title="💳 Achat VIP",
-        description=(
-            "🔥 **Débloque ton accès VIP STGFR**\n\n"
-            "Accède à l'espace VIP et aux contenus exclusifs pour seulement **1€**.\n\n"
-            "📩 Clique sur le bouton ci-dessous pour ouvrir ton ticket privé.\n"
-            "👮 Le staff prendra ensuite en charge ta demande."
-        ),
-        color=discord.Color.from_str("#333333")
-    )
-    embed.add_field(
-        name="🔐 Accès VIP",
-        value="**1€** • Ticket privé • Assistance du staff",
-        inline=False
-    )
-    embed.set_footer(text="STGFR • VIP Access • 1€")
+    def __init__(self, channel_url: str = "https://discord.com"):
+        super().__init__(timeout=None)
 
-    await ctx.send(embed=embed, view=TicketView())
-    await ctx.send(
-        f"<:point:1554955936609865778> **Panneau VIP installé dans {ctx.channel.mention}.**"
-    )
+        c = ui.Container(accent_colour=discord.Colour.from_str("#333333"))
+
+        # Titre + intro, logo à droite
+        c.add_item(ui.Section(
+            ui.TextDisplay("# STG VIP NEW GEN"),
+            ui.TextDisplay(
+                "Après plusieurs années de développement, découvrez la toute nouvelle version du VIP STG.\n"
+                "Une offre exclusive, disponible uniquement sur **STG FR** "
+                "<a:verifiedred:1552279526413828149>, conçue pour vous donner accès à tout notre contenu premium."
+            ),
+            accessory=ui.Thumbnail("attachment://stgfr_webhook_logo.png"),
+        ))
+
+        c.add_item(ui.Separator(visible=True, spacing=discord.SeparatorSpacing.large))
+
+        c.add_item(ui.TextDisplay(
+            "## <a:978859redcrown:1557092090574413975> Débloque immédiatement :\n"
+            "<:point:1554955936609865778> <:18:1554952122473259018> Vocaux S*XCAM avec nos <@&1550556760622899361>\n"
+            "<:point:1554955936609865778> <:cerise:1554950602088382634> 300 000+ contenus exclusifs sur notre espace privé VIP.\n"
+            "<:point:1554955936609865778> <:langue:1554950565828497508> Accès au groupe Snapchat Showcam (places limitées).\n"
+            "<:point:1554955936609865778> <:14489redheadadminroleicon:1557092022563635361> Vidéos en avant-première : compilations, événements, backstage etc.\n"
+            "<:point:1554955936609865778> <:texte:1554952296683544616> Images et vidéos sans aucune restriction.\n"
+            "<:point:1554955936609865778> <:tiktok:1557091493649588254> Swipe infini dans le salon Aucun accès : accès à tout le contenu\n"
+            "<:point:1554955936609865778> <:62392viprubyshiny:1557092189463388160> Accès à tous les premium et VIP de tous les serveurs Discord"
+        ))
+
+        c.add_item(ui.Separator(visible=True))
+
+        c.add_item(ui.TextDisplay(
+            "## <:827263redrules:1557092326256418816> Pourquoi passer VIP ?\n"
+            "<:exclamation:1554958049536380999> Seulement **1 €** pour débloquer l'intégralité des avantages.\n\n"
+            "<:lestenebreswlh:1557090864684212275> Tu soutiens directement l'évolution de STG et le "
+            "développement de nouveaux événements et fonctionnalités."
+        ))
+
+        c.add_item(ui.Separator(visible=True))
+
+        c.add_item(ui.TextDisplay(
+            "## <:couronne:1554951807367913583> Rejoins le VIP dès maintenant !\n"
+            "Clique sur le bouton ci-dessous et profite immédiatement de tous les avantages.\n\n"
+            "**Des centaines de membres nous font déjà confiance.**\n"
+            "Retrouve leurs avis dans <#1550556799051108475> (30 avis par jour)"
+        ))
+
+        c.add_item(ui.Separator(visible=True))
+
+        # Texte à gauche + bouton lien vers le salon à droite
+        c.add_item(ui.Section(
+            ui.TextDisplay("Clique sur le bouton afin d'accéder au VIP"),
+            accessory=ui.Button(
+                label="CLIQUE POUR LE STG VIP",
+                style=discord.ButtonStyle.link,
+                url=channel_url,
+            ),
+        ))
+
+        c.add_item(VIPSelectRow())
+
+        self.add_item(c)
 
 
 @bot.command()
 @commands.has_permissions(administrator=True)
 async def setup_vip_access(ctx):
-    """
-    Envoie le panneau VIP sous forme de VRAI message de webhook :
-    - avatar/logo STGFR en haut à gauche
-    - nom STGFR - Sécurité
-    - trait de séparation en haut et en bas
-    - grand titre stylisé avec les emojis personnalisés fournis
-    - contenu VIP complet
-    - boutons/select attachés au MÊME message webhook
-    """
+    """Envoie le panneau STG VIP dans le salon actuel."""
 
-    # Le logo doit être présent dans le même dossier que bot.py sur Railway.
     if not STGFR_WEBHOOK_LOGO_PATH.exists():
         await ctx.send(
             "❌ Le fichier `stgfr_webhook_logo.png` est introuvable à côté de `bot.py`."
         )
         return
 
-    try:
-        webhooks = await ctx.channel.webhooks()
-        webhook = discord.utils.get(webhooks, name="STGFR - Sécurité")
+    # Lien vers le salon VIP (le bouton ouvre ce salon)
+    channel_url = f"https://discord.com/channels/{ctx.guild.id}/{VIP_ACCESS_CHANNEL_ID}"
 
-        if webhook is None:
-            with open(STGFR_WEBHOOK_LOGO_PATH, "rb") as logo_file:
-                webhook = await ctx.channel.create_webhook(
-                    name="STGFR - Sécurité",
-                    avatar=logo_file.read(),
-                    reason="Webhook panneau VIP STGFR"
-                )
-    except discord.Forbidden:
-        await ctx.send(
-            "❌ Je n'ai pas la permission **Gérer les webhooks** dans ce salon."
-        )
-        return
-    except discord.HTTPException as error:
-        await ctx.send(f"❌ Impossible de créer/récupérer le webhook : `{error}`")
-        return
-
-    # Titre : on utilise les emojis personnalisés réellement fournis.
-    # Les emojis F/R/N/E/W ne nous ont pas été fournis dans le message initial,
-    # donc on ne les invente pas.
-    title_line_1 = (
-        "<:17836minecraftredv:1557097612249669684>"
-        "<:17847minecraftredi:1557097679220252743>"
-        "<:72237minecraftredp:1557097737504165938>"
-        "  "
-        "<:23720minecraftreds:1557097784308535396>"
-        "<:94054minecraftredt:1557097850851164280>"
-        "<:54257minecraftredg:1557097897864986717>"
+    await ctx.send(
+        view=VIPLayout(channel_url),
+        file=discord.File(STGFR_WEBHOOK_LOGO_PATH, filename="stgfr_webhook_logo.png"),
+        allowed_mentions=discord.AllowedMentions.none()
     )
 
-    description = (
-        "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-        f"{title_line_1}\n"
-        "**STGFR VIP NEW GEN**\n\n"
-        "Après plusieurs années de développement, découvrez la toute nouvelle version du VIP STG.\n"
-        "Une offre exclusive, disponible uniquement sur STG FR<a:verifiedred:1552279526413828149>, "
-        "conçue pour vous donner accès à tout notre contenu premium.\n\n"
-        "<a:978859redcrown:1557092090574413975>  **Débloque immédiatement :**\n"
-        "<:point:1554955936609865778> <:18:1554952122473259018>   "
-        "Vocaux S*XCAM avec nos <@&1550556760622899361>\n"
-        "<:point:1554955936609865778> <:cerise:1554950602088382634>  "
-        "300 000+ contenus exclusifs sur notre espace privé VIP.\n"
-        "<:point:1554955936609865778> <:langue:1554950565828497508>   "
-        "Accès au groupe Snapchat Showcam (places limitées).\n"
-        "<:point:1554955936609865778> <:14489redheadadminroleicon:1557092022563635361>   "
-        "Vidéos en avant-première : compilations, événements, backstage etc.\n"
-        "<:point:1554955936609865778> <:texte:1554952296683544616>   "
-        "Images et video sans aucune restriction.\n"
-        "<:point:1554955936609865778> <:tiktok:1557091493649588254>  "
-        "Swipe infini dans le ⁠Aucun accès accès a tout le contenu\n"
-        "<:point:1554955936609865778> <:62392viprubyshiny:1557092189463388160>  "
-        "Accès a tout les premium et vip accès de tout les serveur Discord\n\n"
-        "<:827263redrules:1557092326256418816>  **Pourquoi passer VIP ?**\n"
-        "<:exclamation:1554958049536380999>   "
-        "Seulement **1 €** pour débloquer l'intégralité des avantages.\n\n"
-        "<:lestenebreswlh:1557090864684212275>   "
-        "Tu soutiens directement l'évolution de STGFR et le développement de nouveaux événements et fonctionnalités.\n\n"
-        "<:couronne:1554951807367913583>    **Rejoins le VIP dès maintenant !**\n"
-        "Ouvre un ticket VIP juste ci-dessous et profite immédiatement de tous les avantages.\n\n"
-        "**Des centaines de membres nous font déjà confiance.**\n"
-        "Retrouve leurs avis dans <#1550556799051108475> ⁠ (30 avis par jour)\n\n"
-        "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-    )
-
-    embed = discord.Embed(
-        description=description,
-        color=discord.Color.from_str("#333333")
-    )
-    embed.set_footer(text="STGFR • VIP • 1€")
-
-    try:
-        await webhook.send(
-            content=None,
-            username="STGFR - Sécurité",
-            embed=embed,
-            view=TicketView(),
-            allowed_mentions=discord.AllowedMentions(
-                roles=True,
-                users=True
-            ),
-            wait=True
-        )
-    except discord.HTTPException as error:
-        await ctx.send(f"❌ Impossible d'envoyer le webhook VIP : `{error}`")
-        return
-
-    # On supprime le message de commande pour laisser uniquement le webhook.
+    # On supprime le message de commande pour laisser uniquement le panneau.
     try:
         await ctx.message.delete()
     except (discord.Forbidden, discord.HTTPException):
@@ -1042,11 +804,8 @@ async def setup_hook():
     # Boutons VALIDER / REFUSER
     bot.add_view(ProofReviewView())
 
-    # Bouton d'achat VIP
-    bot.add_view(TicketView())
-
-    # Bouton de fermeture des tickets
-    bot.add_view(CloseTicketView())
+    # Menu déroulant du panneau STG VIP (reste actif après un redémarrage)
+    bot.add_view(VIPLayout())
 
 
 @bot.event
@@ -1596,7 +1355,6 @@ async def on_ready():
     print(f"🌐 Serveurs : {len(bot.guilds)}")
     print("================================")
 
-print("SETUP TICKET PRESENT :", bot.get_command("setup_ticket") is not None)
 print("SETUP VIP ACCESS PRESENT :", bot.get_command("setup_vip_access") is not None)
 print("COMMANDES CHARGEES :")
 for command in bot.commands:
