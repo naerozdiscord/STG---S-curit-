@@ -707,11 +707,11 @@ class VIPLayout(ui.LayoutView):
 
         # Titre + intro, logo à droite
         c.add_item(ui.Section(
-            ui.TextDisplay("# STG VIP NEW GEN"),
+            ui.TextDisplay("# <:17836minecraftredv:1557097612249669684><:17847minecraftredi:1557097679220252743><:72237minecraftredp:1557097737504165938>     <:23720minecraftreds:1557097784308535396> <:94054minecraftredt:1557097850851164280><:54257minecraftredg:1557097897864986717>"),
             ui.TextDisplay(
-                "Après plusieurs années de développement, découvrez la toute nouvelle version du VIP STG.\n"
+                "Découvrez le tout nouveau VIP STG<a:008_whiteexcl:1558922352333684740>\n"
                 "Une offre exclusive, disponible uniquement sur **STG FR** "
-                "<a:verifiedred:1552279526413828149>, conçue pour vous donner accès à tout notre contenu premium."
+                "<a:verifiedred:1552279526413828149>"
             ),
             accessory=ui.Thumbnail("attachment://stgfr_webhook_logo.png"),
         ))
@@ -725,7 +725,6 @@ class VIPLayout(ui.LayoutView):
             "<:point:1554955936609865778> <:langue:1554950565828497508> Accès au groupe Snapchat Showcam (places limitées).\n"
             "<:point:1554955936609865778> <:14489redheadadminroleicon:1557092022563635361> Vidéos en avant-première : compilations, événements, backstage etc.\n"
             "<:point:1554955936609865778> <:texte:1554952296683544616> Images et vidéos sans aucune restriction.\n"
-            "<:point:1554955936609865778> <:tiktok:1557091493649588254> Swipe infini dans le salon Aucun accès : accès à tout le contenu\n"
             "<:point:1554955936609865778> <:62392viprubyshiny:1557092189463388160> Accès à tous les premium et VIP de tous les serveurs Discord"
         ))
 
@@ -743,8 +742,6 @@ class VIPLayout(ui.LayoutView):
         c.add_item(ui.TextDisplay(
             "## <:couronne:1554951807367913583> Rejoins le VIP dès maintenant !\n"
             "Clique sur le bouton ci-dessous et profite immédiatement de tous les avantages.\n\n"
-            "**Des centaines de membres nous font déjà confiance.**\n"
-            "Retrouve leurs avis dans <#1550556799051108475> (30 avis par jour)"
         ))
 
         c.add_item(ui.Separator(visible=True))
