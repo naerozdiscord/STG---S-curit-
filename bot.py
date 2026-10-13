@@ -31,23 +31,23 @@ if not TOKEN:
 # ============================================================
 
 # Salon dans lequel le panneau sera affiché
-PROOF_PANEL_CHANNEL_ID = 1551714705306034226
+PROOF_PANEL_CHANNEL_ID = 1559297407559401622
 
 # Salon privé/staff dans lequel les demandes seront envoyées
-PROOF_REVIEW_CHANNEL_ID = 1554932194298953819
+PROOF_REVIEW_CHANNEL_ID = 1559297408381493423
 
 # Rôle donné automatiquement lorsque la demande est validée
 PROOF_ROLE_ID = 1551072338567499909
 
 # Salon où seront annoncées les validations
-PROOF_SUCCESS_CHANNEL_ID = 1551731497537376396
+PROOF_SUCCESS_CHANNEL_ID = 1559297026175410287
 
 # ============================================================
 # CONFIGURATION DU PANNEAU VIP
 # ============================================================
 
 # Salon vers lequel le bouton "CLIQUE POUR LE STG VIP" redirige (#🎫・tickets-vip)
-VIP_ACCESS_CHANNEL_ID = 1558853950676148345
+VIP_ACCESS_CHANNEL_ID = 1559297379490996245
 
 # Logo affiché à droite du titre du panneau VIP (à mettre à côté de bot.py)
 STGFR_WEBHOOK_LOGO_PATH = Path(__file__).parent / "stgfr_webhook_logo.png"
