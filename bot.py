@@ -456,6 +456,7 @@ async def liste(ctx):
             "`+server_info` → Affiche les informations du serveur.\n"
             "`+server_emojis` → Liste les emojis du serveur.\n"
             "`+setup_logs` → Crée/configure les salons de logs.\n"
+            "`+autoping` → Configure les messages automatiques à l’arrivée.\n"
             "`+emoji add <:nom:ID>` → Importe un emoji personnalisé dans ce serveur.\n"
             "`+uptime` → Affiche le temps de fonctionnement du bot.\n"
             "`+liste` → Affiche cette liste des commandes."
@@ -1860,6 +1861,315 @@ def save_ghostping_config():
     except OSError as error:
         print(f"⚠️ Configuration ghost ping non enregistrée : {error}")
 
+
+
+# ============================================================
+# AUTO PING À L'ARRIVÉE - +autoping (Components V2)
+# ============================================================
+
+AUTOPING_CONFIG_FILE = Path(__file__).parent / "autoping_config.json"
+
+
+def load_autoping_config():
+    try:
+        if AUTOPING_CONFIG_FILE.exists():
+            raw = json.loads(AUTOPING_CONFIG_FILE.read_text(encoding="utf-8"))
+            return raw if isinstance(raw, dict) else {}
+    except (OSError, json.JSONDecodeError, TypeError, ValueError) as error:
+        print(f"⚠️ Configuration autoping non chargée : {error}")
+    return {}
+
+
+autoping_config = load_autoping_config()
+
+
+def save_autoping_config():
+    try:
+        AUTOPING_CONFIG_FILE.write_text(
+            json.dumps(autoping_config, indent=2, ensure_ascii=False),
+            encoding="utf-8"
+        )
+    except OSError as error:
+        print(f"⚠️ Configuration autoping non enregistrée : {error}")
+
+
+def get_autoping_guild_config(guild_id: int):
+    return autoping_config.setdefault(str(guild_id), {"enabled": True, "channels": {}})
+
+
+def render_autoping_message(template: str, member: discord.Member):
+    replacements = {
+        "{mention}": member.mention,
+        "{member}": member.display_name,
+        "{user}": member.name,
+        "{server}": member.guild.name,
+        "{count}": str(member.guild.member_count or len(member.guild.members)),
+    }
+    result = template
+    for key, value in replacements.items():
+        result = result.replace(key, value)
+    return result[:2000]
+
+
+class AutoPingMessageModal(discord.ui.Modal, title="Configurer l'AutoPing"):
+    message_text = discord.ui.TextInput(
+        label="Message envoyé à l'arrivée",
+        style=discord.TextStyle.paragraph,
+        placeholder="Bienvenue {mention} sur {server} !",
+        max_length=1900,
+        required=True
+    )
+    delete_delay = discord.ui.TextInput(
+        label="Suppression après combien de secondes ?",
+        placeholder="Exemple : 10 (0 = ne pas supprimer)",
+        max_length=5,
+        required=True
+    )
+
+    def __init__(self, panel):
+        super().__init__()
+        self.panel = panel
+        cfg = get_autoping_guild_config(panel.guild.id)
+        existing = cfg.get("channels", {}).get(str(panel.selected_channel_id), {})
+        self.message_text.default = existing.get("message", "Bienvenue {mention} sur **{server}** !")
+        self.delete_delay.default = str(existing.get("delete_delay", 10))
+
+    async def on_submit(self, interaction: discord.Interaction):
+        if interaction.user.id != self.panel.owner_id or not interaction.user.guild_permissions.administrator:
+            await interaction.response.send_message("❌ Réservé à l'administrateur qui a ouvert ce panel.", ephemeral=True)
+            return
+        try:
+            delay = int(str(self.delete_delay.value).strip())
+        except ValueError:
+            await interaction.response.send_message("❌ Le délai doit être un nombre de secondes.", ephemeral=True)
+            return
+        if delay < 0 or delay > 86400:
+            await interaction.response.send_message("❌ Choisis un délai entre **0 et 86400 secondes**.", ephemeral=True)
+            return
+
+        cfg = get_autoping_guild_config(interaction.guild.id)
+        cfg["enabled"] = True
+        cfg.setdefault("channels", {})[str(self.panel.selected_channel_id)] = {
+            "message": str(self.message_text.value),
+            "delete_delay": delay,
+            "enabled": True,
+        }
+        save_autoping_config()
+        await interaction.response.send_message(
+            f"✅ AutoPing enregistré pour <#{self.panel.selected_channel_id}>. Délai : **{delay}s**.",
+            ephemeral=True
+        )
+
+
+class AutoPingChannelSelect(discord.ui.ChannelSelect):
+    def __init__(self, panel):
+        self.panel = panel
+        super().__init__(
+            placeholder="📢 Choisir un salon à configurer",
+            min_values=1,
+            max_values=1,
+            channel_types=[discord.ChannelType.text],
+            custom_id="autoping:channel"
+        )
+
+    async def callback(self, interaction: discord.Interaction):
+        if interaction.user.id != self.panel.owner_id:
+            await interaction.response.send_message("❌ Ce panel ne t'appartient pas.", ephemeral=True)
+            return
+        self.panel.selected_channel_id = self.values[0].id
+        await interaction.response.edit_message(view=self.panel.rebuild())
+
+
+class AutoPingConfigureButton(discord.ui.Button):
+    def __init__(self, panel):
+        self.panel = panel
+        super().__init__(label="Configurer le message", emoji="✏️", style=discord.ButtonStyle.primary, custom_id="autoping:configure")
+
+    async def callback(self, interaction: discord.Interaction):
+        if interaction.user.id != self.panel.owner_id:
+            await interaction.response.send_message("❌ Ce panel ne t'appartient pas.", ephemeral=True)
+            return
+        if not self.panel.selected_channel_id:
+            await interaction.response.send_message("❌ Sélectionne d'abord un salon.", ephemeral=True)
+            return
+        await interaction.response.send_modal(AutoPingMessageModal(self.panel))
+
+
+class AutoPingToggleButton(discord.ui.Button):
+    def __init__(self, panel):
+        self.panel = panel
+        enabled = get_autoping_guild_config(panel.guild.id).get("enabled", True)
+        super().__init__(
+            label="Désactiver tout" if enabled else "Activer tout",
+            emoji="⛔" if enabled else "✅",
+            style=discord.ButtonStyle.danger if enabled else discord.ButtonStyle.success,
+            custom_id="autoping:toggle"
+        )
+
+    async def callback(self, interaction: discord.Interaction):
+        if interaction.user.id != self.panel.owner_id or not interaction.user.guild_permissions.administrator:
+            await interaction.response.send_message("❌ Réservé aux administrateurs.", ephemeral=True)
+            return
+        cfg = get_autoping_guild_config(interaction.guild.id)
+        cfg["enabled"] = not cfg.get("enabled", True)
+        save_autoping_config()
+        await interaction.response.edit_message(view=self.panel.rebuild())
+
+
+class AutoPingRemoveButton(discord.ui.Button):
+    def __init__(self, panel):
+        self.panel = panel
+        super().__init__(label="Retirer ce salon", emoji="🗑️", style=discord.ButtonStyle.secondary, custom_id="autoping:remove")
+
+    async def callback(self, interaction: discord.Interaction):
+        if interaction.user.id != self.panel.owner_id or not interaction.user.guild_permissions.administrator:
+            await interaction.response.send_message("❌ Réservé aux administrateurs.", ephemeral=True)
+            return
+        if not self.panel.selected_channel_id:
+            await interaction.response.send_message("❌ Sélectionne d'abord un salon.", ephemeral=True)
+            return
+        cfg = get_autoping_guild_config(interaction.guild.id)
+        removed = cfg.setdefault("channels", {}).pop(str(self.panel.selected_channel_id), None)
+        save_autoping_config()
+        notice = "🗑️ **Configuration retirée de ce salon.**" if removed else "ℹ️ **Ce salon n'était pas configuré.**"
+        await interaction.response.edit_message(view=self.panel.rebuild(notice=notice))
+
+
+class AutoPingTestButton(discord.ui.Button):
+    def __init__(self, panel):
+        self.panel = panel
+        super().__init__(label="Tester", emoji="🧪", style=discord.ButtonStyle.secondary, custom_id="autoping:test")
+
+    async def callback(self, interaction: discord.Interaction):
+        if interaction.user.id != self.panel.owner_id:
+            await interaction.response.send_message("❌ Ce panel ne t'appartient pas.", ephemeral=True)
+            return
+        if not self.panel.selected_channel_id:
+            await interaction.response.send_message("❌ Sélectionne d'abord un salon.", ephemeral=True)
+            return
+        cfg = get_autoping_guild_config(interaction.guild.id).get("channels", {}).get(str(self.panel.selected_channel_id))
+        channel = interaction.guild.get_channel(self.panel.selected_channel_id)
+        if not cfg or not isinstance(channel, discord.TextChannel):
+            await interaction.response.send_message("❌ Configure d'abord ce salon.", ephemeral=True)
+            return
+        await interaction.response.defer(ephemeral=True)
+        try:
+            await channel.send(
+                render_autoping_message(cfg["message"], interaction.user),
+                delete_after=cfg.get("delete_delay") or None,
+                allowed_mentions=discord.AllowedMentions(users=True, roles=True, everyone=True)
+            )
+            await interaction.followup.send("✅ Message de test envoyé.", ephemeral=True)
+        except (discord.Forbidden, discord.HTTPException) as error:
+            await interaction.followup.send(f"❌ Envoi impossible : `{error}`", ephemeral=True)
+
+
+class AutoPingPanel(discord.ui.LayoutView):
+    def __init__(self, owner_id: int, guild: discord.Guild, selected_channel_id=None, notice=None):
+        super().__init__(timeout=900)
+        self.owner_id = owner_id
+        self.guild = guild
+        self.selected_channel_id = selected_channel_id
+        self.notice = notice
+        self._build()
+
+    def _build(self):
+        cfg = get_autoping_guild_config(self.guild.id)
+        channels_cfg = cfg.get("channels", {})
+        enabled = cfg.get("enabled", True)
+        configured_lines = []
+        for channel_id, data in channels_cfg.items():
+            channel = self.guild.get_channel(int(channel_id))
+            if channel:
+                delay = data.get("delete_delay", 0)
+                preview = str(data.get("message", "")).replace("\n", " ")
+                if len(preview) > 55:
+                    preview = preview[:52] + "..."
+                configured_lines.append(f"• {channel.mention} • `{delay}s` • {preview}")
+        configured_text = "\n".join(configured_lines[:12]) or "*Aucun salon configuré pour le moment.*"
+        selected = f"<#{self.selected_channel_id}>" if self.selected_channel_id else "*Aucun salon sélectionné*"
+
+        c = discord.ui.Container(accent_color=0xED4245)
+        c.add_item(discord.ui.TextDisplay(
+            "# 🔔 AUTO PING • ARRIVÉE MEMBRE\n"
+            "Envoie automatiquement un message dans **un ou plusieurs salons** dès qu'un membre rejoint le serveur."
+        ))
+        c.add_item(discord.ui.Separator())
+        c.add_item(discord.ui.TextDisplay(
+            f"### 🛡️ État\n{'🟢 **Activé**' if enabled else '🔴 **Désactivé**'}\n\n"
+            f"### 🎯 Salon en cours\n{selected}\n\n"
+            f"### 📋 Salons configurés\n{configured_text}"
+        ))
+        if self.notice:
+            c.add_item(discord.ui.Separator())
+            c.add_item(discord.ui.TextDisplay(self.notice))
+        c.add_item(discord.ui.Separator())
+        c.add_item(discord.ui.TextDisplay(
+            "### 1️⃣ Choisis un salon\n"
+            "Chaque salon peut avoir **son propre message** et **son propre délai de suppression**."
+        ))
+        c.add_item(discord.ui.ActionRow(AutoPingChannelSelect(self)))
+        c.add_item(discord.ui.TextDisplay(
+            "### 2️⃣ Configure le message\n"
+            "Variables : `{mention}` • `{member}` • `{user}` • `{server}` • `{count}`"
+        ))
+        c.add_item(discord.ui.ActionRow(
+            AutoPingConfigureButton(self),
+            AutoPingTestButton(self),
+            AutoPingRemoveButton(self)
+        ))
+        c.add_item(discord.ui.Separator())
+        c.add_item(discord.ui.ActionRow(AutoPingToggleButton(self)))
+        c.add_item(discord.ui.TextDisplay(
+            "-# Le délai est en secondes. Mets 0 pour garder le message. Les réglages sont sauvegardés dans autoping_config.json."
+        ))
+        self.add_item(c)
+
+    def rebuild(self, notice=None):
+        return AutoPingPanel(self.owner_id, self.guild, self.selected_channel_id, notice)
+
+
+@bot.command(name="autoping")
+@commands.has_permissions(administrator=True)
+async def autoping(ctx):
+    """Ouvre le panel Components V2 de configuration des messages automatiques à l'arrivée."""
+    if ctx.guild is None:
+        return
+    await ctx.send(view=AutoPingPanel(ctx.author.id, ctx.guild))
+
+
+@bot.listen("on_member_join")
+async def autoping_member_join(member: discord.Member):
+    if member.bot:
+        return
+    cfg = autoping_config.get(str(member.guild.id), {})
+    if not cfg.get("enabled", True):
+        return
+
+    for channel_id, data in list(cfg.get("channels", {}).items()):
+        if not data.get("enabled", True):
+            continue
+        try:
+            channel = member.guild.get_channel(int(channel_id))
+        except (TypeError, ValueError):
+            continue
+        if not isinstance(channel, discord.TextChannel):
+            continue
+
+        message_text = render_autoping_message(str(data.get("message", "Bienvenue {mention} !")), member)
+        delay = data.get("delete_delay", 10)
+        try:
+            delay = int(delay)
+        except (TypeError, ValueError):
+            delay = 10
+        try:
+            await channel.send(
+                message_text,
+                delete_after=delay if delay > 0 else None,
+                allowed_mentions=discord.AllowedMentions(users=True, roles=True, everyone=True)
+            )
+        except (discord.Forbidden, discord.HTTPException) as error:
+            print(f"⚠️ AutoPing impossible dans {channel.name} : {error}")
 
 
 # ============================================================
