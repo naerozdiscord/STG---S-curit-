@@ -58,6 +58,7 @@ STGFR_WEBHOOK_LOGO_PATH = Path(__file__).parent / "stgfr_webhook_logo.png"
 # Préfixe pour les commandes
 intents = discord.Intents.default()
 intents.members = True  # Pour gérer les membres
+intents.moderation = True  # Pour les logs de bans / débans
 intents.message_content = True  # Pour pouvoir lire les messages
 
 bot = commands.Bot(command_prefix="+", intents=intents)
@@ -454,6 +455,7 @@ async def liste(ctx):
             "`+server_stats` → Affiche les statistiques du serveur.\n"
             "`+server_info` → Affiche les informations du serveur.\n"
             "`+server_emojis` → Liste les emojis du serveur.\n"
+            "`+setup_logs` → Crée/configure les salons de logs.\n"
             "`+emoji add <:nom:ID>` → Importe un emoji personnalisé dans ce serveur.\n"
             "`+uptime` → Affiche le temps de fonctionnement du bot.\n"
             "`+liste` → Affiche cette liste des commandes."
@@ -892,12 +894,398 @@ async def setup_vip_access(ctx):
         pass
 
 
+
+
+# ============================================================
+# SYSTÈME DE LOGS + PANEL DE CONFIGURATION
+# ============================================================
+
+LOG_CONFIG_FILE = Path(__file__).parent / "logs_config.json"
+LOG_TYPES = {
+    "serveur": ("⚙️", "Serveur"),
+    "role": ("🎭", "Rôles"),
+    "messages": ("💬", "Messages"),
+    "salon": ("🛠️", "Modifications salons"),
+    "vc": ("🔊", "Vocaux"),
+    "automods": ("🛡️", "AutoMod"),
+    "membres": ("👤", "Membres"),
+    "invites": ("🔗", "Invitations"),
+    "join": ("📥", "Arrivées"),
+    "leave": ("📤", "Départs"),
+    "channel": ("📁", "Création/suppression salons"),
+}
+
+
+def load_logs_config():
+    try:
+        if LOG_CONFIG_FILE.exists():
+            raw = json.loads(LOG_CONFIG_FILE.read_text(encoding="utf-8"))
+            return {str(gid): {str(k): int(v) for k, v in cfg.items()} for gid, cfg in raw.items()}
+    except (OSError, ValueError, TypeError, json.JSONDecodeError) as error:
+        print(f"⚠️ Configuration logs non chargée : {error}")
+    return {}
+
+
+logs_config = load_logs_config()
+
+
+def save_logs_config():
+    LOG_CONFIG_FILE.write_text(json.dumps(logs_config, indent=2, ensure_ascii=False), encoding="utf-8")
+
+
+def get_log_channel(guild: discord.Guild, kind: str):
+    channel_id = logs_config.get(str(guild.id), {}).get(kind)
+    return guild.get_channel(channel_id) if channel_id else None
+
+
+async def send_log(guild: discord.Guild, kind: str, embed: discord.Embed):
+    channel = get_log_channel(guild, kind)
+    if channel is None:
+        return
+    try:
+        await channel.send(embed=embed)
+    except (discord.Forbidden, discord.HTTPException) as error:
+        print(f"⚠️ Logs {kind} impossibles dans {guild.name}: {error}")
+
+
+def log_embed(title: str, description: str = "", color=discord.Color.blurple()):
+    embed = discord.Embed(title=title, description=description, color=color, timestamp=discord.utils.utcnow())
+    embed.set_footer(text="STG - Système de logs")
+    return embed
+
+
+def build_logs_panel_embed(guild: discord.Guild):
+    cfg = logs_config.get(str(guild.id), {})
+    lines = []
+    for key, (emoji, label) in LOG_TYPES.items():
+        channel = guild.get_channel(cfg.get(key)) if cfg.get(key) else None
+        lines.append(f"{emoji} **{label}** → {channel.mention if channel else '`Non configuré`'}")
+    return discord.Embed(
+        title="⚙️ CONFIGURATION DES LOGS",
+        description=(
+            "Choisis d’abord une catégorie de logs, puis sélectionne le salon où elle doit être envoyée.\n\n"
+            + "\n".join(lines)
+        ),
+        color=0x333333
+    ).set_footer(text="STGFR • Configuration des logs")
+
+
+class LogTypeSelect(discord.ui.Select):
+    def __init__(self):
+        options = [discord.SelectOption(label=label, value=key, emoji=emoji) for key, (emoji, label) in LOG_TYPES.items()]
+        super().__init__(placeholder="1️⃣ Choisir le type de logs", min_values=1, max_values=1, options=options, custom_id="logs:type")
+
+    async def callback(self, interaction: discord.Interaction):
+        if not interaction.user.guild_permissions.administrator:
+            await interaction.response.send_message("❌ Réservé aux administrateurs.", ephemeral=True)
+            return
+        view = LogChannelPickerView(self.values[0])
+        await interaction.response.send_message(
+            f"📍 Choisis maintenant le salon pour **{LOG_TYPES[self.values[0]][1]}** :",
+            view=view,
+            ephemeral=True
+        )
+
+
+class LogChannelSelect(discord.ui.ChannelSelect):
+    def __init__(self, log_kind: str):
+        self.log_kind = log_kind
+        super().__init__(
+            placeholder="2️⃣ Choisir le salon de destination",
+            min_values=1,
+            max_values=1,
+            channel_types=[discord.ChannelType.text]
+        )
+
+    async def callback(self, interaction: discord.Interaction):
+        channel = self.values[0]
+        guild_cfg = logs_config.setdefault(str(interaction.guild.id), {})
+        guild_cfg[self.log_kind] = channel.id
+        save_logs_config()
+        await interaction.response.send_message(
+            f"✅ **{LOG_TYPES[self.log_kind][1]}** sera maintenant envoyé dans {channel.mention}.",
+            ephemeral=True
+        )
+
+
+class LogChannelPickerView(discord.ui.View):
+    def __init__(self, log_kind: str):
+        super().__init__(timeout=120)
+        self.add_item(LogChannelSelect(log_kind))
+
+
+class LogsConfigView(discord.ui.View):
+    def __init__(self):
+        super().__init__(timeout=None)
+        self.add_item(LogTypeSelect())
+
+    @discord.ui.button(label="Actualiser", emoji="🔄", style=discord.ButtonStyle.secondary, custom_id="logs:refresh")
+    async def refresh(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.edit_message(embed=build_logs_panel_embed(interaction.guild), view=self)
+
+    @discord.ui.button(label="Désactiver tout", emoji="🔴", style=discord.ButtonStyle.danger, custom_id="logs:disable_all")
+    async def disable_all(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not interaction.user.guild_permissions.administrator:
+            await interaction.response.send_message("❌ Réservé aux administrateurs.", ephemeral=True)
+            return
+        logs_config[str(interaction.guild.id)] = {}
+        save_logs_config()
+        await interaction.response.edit_message(embed=build_logs_panel_embed(interaction.guild), view=self)
+
+
+@bot.command(name="setup_logs")
+@commands.has_permissions(administrator=True)
+async def setup_logs(ctx):
+    """Affiche le panel interactif permettant d'assigner chaque type de log à un salon."""
+    await ctx.send(embed=build_logs_panel_embed(ctx.guild), view=LogsConfigView())
+
+
+# ----- Arrivées / départs -----
+@bot.listen("on_member_join")
+async def logs_member_join(member: discord.Member):
+    embed = log_embed("📥 Membre arrivé", f"{member.mention} a rejoint le serveur.", discord.Color.green())
+    embed.set_thumbnail(url=member.display_avatar.url)
+    embed.add_field(name="Utilisateur", value=f"{member} (`{member.id}`)", inline=False)
+    embed.add_field(name="Compte créé", value=discord.utils.format_dt(member.created_at, style="R"), inline=True)
+    embed.add_field(name="Nombre de membres", value=str(member.guild.member_count), inline=True)
+    await send_log(member.guild, "join", embed)
+
+
+@bot.listen("on_member_remove")
+async def logs_member_leave(member: discord.Member):
+    embed = log_embed("📤 Membre parti", f"{member.mention} a quitté le serveur.", discord.Color.red())
+    embed.set_thumbnail(url=member.display_avatar.url)
+    embed.add_field(name="Utilisateur", value=f"{member} (`{member.id}`)", inline=False)
+    embed.add_field(name="Nombre de membres", value=str(member.guild.member_count), inline=True)
+    await send_log(member.guild, "leave", embed)
+
+
+# ----- Modifications des membres et rôles -----
+@bot.listen("on_member_update")
+async def logs_member_update(before: discord.Member, after: discord.Member):
+    if before.nick != after.nick:
+        embed = log_embed("✏️ Pseudonyme modifié", f"{after.mention}", discord.Color.orange())
+        embed.add_field(name="Avant", value=before.nick or before.name, inline=True)
+        embed.add_field(name="Après", value=after.nick or after.name, inline=True)
+        embed.add_field(name="ID utilisateur", value=str(after.id), inline=False)
+        await send_log(after.guild, "membres", embed)
+
+    before_roles = set(before.roles)
+    after_roles = set(after.roles)
+    added = after_roles - before_roles
+    removed = before_roles - after_roles
+    if added or removed:
+        embed = log_embed("🎭 Rôles d'un membre modifiés", f"{after.mention}", discord.Color.gold())
+        if added:
+            embed.add_field(name="Rôle(s) ajouté(s)", value="\n".join(r.mention for r in added), inline=False)
+        if removed:
+            embed.add_field(name="Rôle(s) retiré(s)", value="\n".join(r.name for r in removed), inline=False)
+        embed.add_field(name="ID utilisateur", value=str(after.id), inline=False)
+        await send_log(after.guild, "membres", embed)
+
+
+@bot.listen("on_guild_role_create")
+async def logs_role_create(role: discord.Role):
+    embed = log_embed("➕ Rôle créé", role.mention, discord.Color.green())
+    embed.add_field(name="Nom", value=role.name, inline=True)
+    embed.add_field(name="ID", value=str(role.id), inline=True)
+    await send_log(role.guild, "role", embed)
+
+
+@bot.listen("on_guild_role_delete")
+async def logs_role_delete(role: discord.Role):
+    embed = log_embed("➖ Rôle supprimé", f"**{role.name}**", discord.Color.red())
+    embed.add_field(name="ID", value=str(role.id), inline=True)
+    await send_log(role.guild, "role", embed)
+
+
+@bot.listen("on_guild_role_update")
+async def logs_role_update(before: discord.Role, after: discord.Role):
+    changes = []
+    if before.name != after.name:
+        changes.append(f"**Nom :** `{before.name}` → `{after.name}`")
+    if before.permissions != after.permissions:
+        changes.append("**Permissions :** modifiées")
+    if before.colour != after.colour:
+        changes.append(f"**Couleur :** `{before.colour}` → `{after.colour}`")
+    if changes:
+        embed = log_embed("🛠️ Rôle modifié", "\n".join(changes), discord.Color.orange())
+        embed.add_field(name="Rôle", value=f"{after.mention} (`{after.id}`)", inline=False)
+        await send_log(after.guild, "role", embed)
+
+
+# ----- Messages -----
+@bot.listen("on_message_delete")
+async def logs_message_delete(message: discord.Message):
+    if message.guild is None or message.author.bot:
+        return
+    embed = log_embed("🗑️ Message supprimé", discord.utils.escape_markdown(message.content[:3500]) or "*Aucun texte*", discord.Color.red())
+    embed.set_author(name=str(message.author), icon_url=message.author.display_avatar.url)
+    embed.add_field(name="Auteur", value=f"{message.author.mention} (`{message.author.id}`)", inline=False)
+    embed.add_field(name="Salon", value=message.channel.mention, inline=True)
+    if message.attachments:
+        embed.add_field(name="Pièces jointes", value="\n".join(a.url for a in message.attachments[:5]), inline=False)
+    await send_log(message.guild, "messages", embed)
+
+
+@bot.listen("on_message_edit")
+async def logs_message_edit(before: discord.Message, after: discord.Message):
+    if before.guild is None or before.author.bot or before.content == after.content:
+        return
+    embed = log_embed("✏️ Message modifié", color=discord.Color.orange())
+    embed.set_author(name=str(before.author), icon_url=before.author.display_avatar.url)
+    embed.add_field(name="Avant", value=discord.utils.escape_markdown(before.content[:1000]) or "*Vide*", inline=False)
+    embed.add_field(name="Après", value=discord.utils.escape_markdown(after.content[:1000]) or "*Vide*", inline=False)
+    embed.add_field(name="Salon", value=before.channel.mention, inline=True)
+    embed.add_field(name="Lien", value=f"[Voir le message]({after.jump_url})", inline=True)
+    await send_log(before.guild, "messages", embed)
+
+
+# ----- Salons texte / vocaux -----
+@bot.listen("on_guild_channel_create")
+async def logs_channel_create(channel):
+    embed = log_embed("➕ Salon créé", f"{channel.mention if hasattr(channel, 'mention') else channel.name}", discord.Color.green())
+    embed.add_field(name="Nom", value=channel.name, inline=True)
+    embed.add_field(name="ID", value=str(channel.id), inline=True)
+    embed.add_field(name="Type", value=str(channel.type), inline=True)
+    await send_log(channel.guild, "channel", embed)
+
+
+@bot.listen("on_guild_channel_delete")
+async def logs_channel_delete(channel):
+    embed = log_embed("➖ Salon supprimé", f"**{channel.name}**", discord.Color.red())
+    embed.add_field(name="ID", value=str(channel.id), inline=True)
+    embed.add_field(name="Type", value=str(channel.type), inline=True)
+    await send_log(channel.guild, "channel", embed)
+
+
+@bot.listen("on_guild_channel_update")
+async def logs_channel_update(before, after):
+    changes = []
+    if before.name != after.name:
+        changes.append(f"**Nom :** `{before.name}` → `{after.name}`")
+    if getattr(before, "category_id", None) != getattr(after, "category_id", None):
+        changes.append("**Catégorie :** modifiée")
+    if getattr(before, "position", None) != getattr(after, "position", None):
+        changes.append("**Position :** modifiée")
+    if changes:
+        embed = log_embed("🛠️ Salon modifié", "\n".join(changes), discord.Color.orange())
+        embed.add_field(name="Salon", value=f"{after.mention} (`{after.id}`)", inline=False)
+        await send_log(after.guild, "salon", embed)
+
+
+@bot.listen("on_voice_state_update")
+async def logs_voice_state(member: discord.Member, before: discord.VoiceState, after: discord.VoiceState):
+    if before.channel == after.channel:
+        return
+    if before.channel is None and after.channel is not None:
+        text = f"{member.mention} a rejoint **{after.channel.name}**."
+        title = "🔊 Connexion vocale"
+        color = discord.Color.green()
+    elif before.channel is not None and after.channel is None:
+        text = f"{member.mention} a quitté **{before.channel.name}**."
+        title = "🔇 Déconnexion vocale"
+        color = discord.Color.red()
+    else:
+        text = f"{member.mention} est passé de **{before.channel.name}** à **{after.channel.name}**."
+        title = "🔁 Déplacement vocal"
+        color = discord.Color.orange()
+    embed = log_embed(title, text, color)
+    embed.add_field(name="ID utilisateur", value=str(member.id), inline=False)
+    await send_log(member.guild, "vc", embed)
+
+
+# ----- Serveur / bans -----
+@bot.listen("on_member_ban")
+async def logs_member_ban(guild: discord.Guild, user: discord.User):
+    embed = log_embed("🔨 Membre banni", f"{user.mention} a été banni.", discord.Color.red())
+    embed.add_field(name="Utilisateur", value=f"{user} (`{user.id}`)", inline=False)
+    await send_log(guild, "serveur", embed)
+
+
+@bot.listen("on_member_unban")
+async def logs_member_unban(guild: discord.Guild, user: discord.User):
+    embed = log_embed("🔓 Membre débanni", f"{user.mention} a été débanni.", discord.Color.green())
+    embed.add_field(name="Utilisateur", value=f"{user} (`{user.id}`)", inline=False)
+    await send_log(guild, "serveur", embed)
+
+
+@bot.listen("on_guild_update")
+async def logs_guild_update(before: discord.Guild, after: discord.Guild):
+    changes = []
+    if before.name != after.name:
+        changes.append(f"**Nom :** `{before.name}` → `{after.name}`")
+    if before.verification_level != after.verification_level:
+        changes.append(f"**Niveau de vérification :** `{before.verification_level}` → `{after.verification_level}`")
+    if changes:
+        await send_log(after, "serveur", log_embed("⚙️ Serveur modifié", "\n".join(changes), discord.Color.orange()))
+
+
+# ----- Invitations -----
+@bot.listen("on_invite_create")
+async def logs_invite_create(invite: discord.Invite):
+    if invite.guild is None:
+        return
+    embed = log_embed("🔗 Invitation créée", f"Code : `{invite.code}`", discord.Color.green())
+    if invite.inviter:
+        embed.add_field(name="Créée par", value=f"{invite.inviter.mention} (`{invite.inviter.id}`)", inline=False)
+    embed.add_field(name="Salon", value=invite.channel.mention if invite.channel else "Inconnu", inline=True)
+    embed.add_field(name="Utilisations max", value=str(invite.max_uses or "Illimité"), inline=True)
+    await send_log(invite.guild, "invites", embed)
+
+
+@bot.listen("on_invite_delete")
+async def logs_invite_delete(invite: discord.Invite):
+    if invite.guild is None:
+        return
+    embed = log_embed("🗑️ Invitation supprimée", f"Code : `{invite.code}`", discord.Color.red())
+    await send_log(invite.guild, "invites", embed)
+
+
+# ----- AutoMod Discord -----
+@bot.listen("on_automod_rule_create")
+async def logs_automod_create(rule):
+    embed = log_embed("🛡️ Règle AutoMod créée", f"**{rule.name}**", discord.Color.green())
+    embed.add_field(name="ID", value=str(rule.id), inline=True)
+    await send_log(rule.guild, "automods", embed)
+
+
+@bot.listen("on_automod_rule_update")
+async def logs_automod_update(rule):
+    embed = log_embed("🛡️ Règle AutoMod modifiée", f"**{rule.name}**", discord.Color.orange())
+    embed.add_field(name="ID", value=str(rule.id), inline=True)
+    await send_log(rule.guild, "automods", embed)
+
+
+@bot.listen("on_automod_rule_delete")
+async def logs_automod_delete(rule):
+    embed = log_embed("🛡️ Règle AutoMod supprimée", f"**{rule.name}**", discord.Color.red())
+    embed.add_field(name="ID", value=str(rule.id), inline=True)
+    await send_log(rule.guild, "automods", embed)
+
+
+@bot.listen("on_automod_action_execution")
+async def logs_automod_action(execution):
+    guild = bot.get_guild(execution.guild_id)
+    if guild is None:
+        return
+    embed = log_embed("🚨 Action AutoMod déclenchée", discord.Color.red())
+    embed.description = f"Une règle AutoMod a été déclenchée pour <@{execution.user_id}>."
+    embed.add_field(name="Utilisateur", value=f"<@{execution.user_id}> (`{execution.user_id}`)", inline=False)
+    if execution.channel_id:
+        embed.add_field(name="Salon", value=f"<#{execution.channel_id}>", inline=True)
+    await send_log(guild, "automods", embed)
+
+
 # ============================================================
 # INITIALISATION DES BOUTONS PERSISTANTS
 # ============================================================
 
 @bot.event
 async def setup_hook():
+
+    # Panel persistant de configuration des logs
+    bot.add_view(LogsConfigView())
 
     # Bouton "ENVOYER LES PREUVES"
     bot.add_view(ProofPanelView())
