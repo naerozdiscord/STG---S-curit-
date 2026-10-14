@@ -58,6 +58,7 @@ STGFR_WEBHOOK_LOGO_PATH = Path(__file__).parent / "stgfr_webhook_logo.png"
 # Préfixe pour les commandes
 intents = discord.Intents.default()
 intents.members = True  # Pour gérer les membres
+intents.presences = True  # Pour +stats : compter les membres en ligne (à activer aussi dans le portail Discord)
 intents.moderation = True  # Pour les logs de bans / débans
 intents.message_content = True  # Pour pouvoir lire les messages
 
@@ -453,6 +454,7 @@ async def liste(ctx):
             "`+info @user` → Affiche des infos sur un membre.\n"
             "`+avatar @user` → Affiche l'avatar d'un membre.\n"
             "`+server_stats` → Affiche les statistiques du serveur.\n"
+            "`+stats` → Affiche le panneau statistiques Components V2.\n"
             "`+server_info` → Affiche les informations du serveur.\n"
             "`+server_emojis` → Liste les emojis du serveur.\n"
             "`+setup_logs` → Crée/configure les salons de logs.\n"
@@ -1861,6 +1863,99 @@ def save_ghostping_config():
     except OSError as error:
         print(f"⚠️ Configuration ghost ping non enregistrée : {error}")
 
+
+
+# ============================================================
+# +stats - PANNEAU STATISTIQUES (Components V2)
+# ============================================================
+
+# Record vocal conservé en mémoire depuis le démarrage du bot.
+# Il est mis à jour à chaque connexion/déconnexion/déplacement vocal.
+voice_peak_by_guild = {}
+
+
+def current_voice_members(guild: discord.Guild) -> int:
+    """Nombre de membres actuellement connectés dans un salon vocal."""
+    return sum(len(channel.members) for channel in guild.voice_channels)
+
+
+def refresh_voice_peak(guild: discord.Guild) -> int:
+    current = current_voice_members(guild)
+    previous = voice_peak_by_guild.get(guild.id, 0)
+    voice_peak_by_guild[guild.id] = max(previous, current)
+    return voice_peak_by_guild[guild.id]
+
+
+@bot.listen("on_voice_state_update")
+async def stats_voice_peak_listener(member: discord.Member, before: discord.VoiceState, after: discord.VoiceState):
+    refresh_voice_peak(member.guild)
+
+
+def build_stats_layout(guild: discord.Guild):
+    """Construit le panneau +stats en Components V2."""
+    members = guild.member_count or len(guild.members)
+    bots = sum(1 for member in guild.members if member.bot)
+
+    # Requiert l'intent Presence dans le Developer Portal.
+    online = sum(
+        1 for member in guild.members
+        if not member.bot and getattr(member, "status", discord.Status.offline) != discord.Status.offline
+    )
+
+    voice_now = current_voice_members(guild)
+    voice_peak = refresh_voice_peak(guild)
+    active_channels = len(guild.text_channels) + len(guild.voice_channels)
+
+    container = ui.Container(accent_colour=discord.Colour.from_str("#333333"))
+
+    title = f"## {guild.name} 🏆 📈 Statistiques"
+    voice_text = (
+        f"# 🔊 {voice_peak:,}".replace(",", " ")
+        + "\n"
+        + f"record vocal depuis le démarrage • actuellement : **{voice_now:,}**".replace(",", " ")
+    )
+
+    if guild.icon:
+        container.add_item(
+            ui.Section(
+                ui.TextDisplay(title),
+                ui.TextDisplay(voice_text),
+                accessory=ui.Thumbnail(guild.icon.url),
+            )
+        )
+    else:
+        container.add_item(ui.TextDisplay(title + "\n" + voice_text))
+
+    container.add_item(ui.Separator(visible=True, spacing=discord.SeparatorSpacing.small))
+
+    stats_text = (
+        f"*Membres :* **{members:,}**\n"
+        f"*En ligne :* **{online:,}**\n"
+        f"*En vocal :* **{voice_now:,}**\n"
+        f"*Salons actifs :* **{active_channels:,}**\n"
+        f"*Boosts :* **{guild.premium_subscription_count:,}**"
+    ).replace(",", " ")
+    container.add_item(ui.TextDisplay(stats_text))
+
+    view = ui.LayoutView(timeout=180)
+    view.add_item(container)
+    return view
+
+
+@bot.command(name="stats")
+async def stats(ctx):
+    """Affiche les statistiques du serveur dans un panneau Components V2."""
+    if ctx.guild is None:
+        await ctx.send("❌ Cette commande doit être utilisée dans un serveur.")
+        return
+
+    await ctx.send(view=build_stats_layout(ctx.guild))
+
+    # Comme sur l'exemple : on laisse uniquement le panneau si possible.
+    try:
+        await ctx.message.delete()
+    except (discord.Forbidden, discord.HTTPException):
+        pass
 
 
 # ============================================================
