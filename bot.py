@@ -1861,6 +1861,212 @@ def save_ghostping_config():
         print(f"⚠️ Configuration ghost ping non enregistrée : {error}")
 
 
+
+# ============================================================
+# PANEL COMPONENTS V2 - +ghostping
+# ============================================================
+
+class GhostPingChannelSelect(discord.ui.ChannelSelect):
+    def __init__(self, panel):
+        self.panel = panel
+        super().__init__(
+            placeholder="📢 Dans quel salon ghost ping ?",
+            min_values=1,
+            max_values=1,
+            channel_types=[discord.ChannelType.text],
+            custom_id="ghostping:channel"
+        )
+
+    async def callback(self, interaction: discord.Interaction):
+        if interaction.user.id != self.panel.owner_id:
+            await interaction.response.send_message("❌ Ce panel ne t'appartient pas.", ephemeral=True)
+            return
+
+        self.panel.selected_channel_id = self.values[0].id
+        await interaction.response.edit_message(view=self.panel.rebuild())
+
+
+class GhostPingIntervalSelect(discord.ui.Select):
+    def __init__(self, panel):
+        self.panel = panel
+        options = [
+            discord.SelectOption(label="Toutes les 2 heures", value="2h", emoji="⏱️"),
+            discord.SelectOption(label="Toutes les 5 heures", value="5h", emoji="🕔"),
+            discord.SelectOption(label="Toutes les 10 heures", value="10h", emoji="🕙"),
+            discord.SelectOption(label="Toutes les 24 heures", value="24h", emoji="📅"),
+        ]
+        super().__init__(
+            placeholder="⏰ Tous les combien de temps ?",
+            min_values=1,
+            max_values=1,
+            options=options,
+            custom_id="ghostping:interval"
+        )
+
+    async def callback(self, interaction: discord.Interaction):
+        if interaction.user.id != self.panel.owner_id:
+            await interaction.response.send_message("❌ Ce panel ne t'appartient pas.", ephemeral=True)
+            return
+
+        self.panel.selected_interval = self.values[0]
+        await interaction.response.edit_message(view=self.panel.rebuild())
+
+
+class GhostPingActivateButton(discord.ui.Button):
+    def __init__(self, panel):
+        self.panel = panel
+        super().__init__(
+            label="Activer le ghost ping",
+            emoji="✅",
+            style=discord.ButtonStyle.success,
+            custom_id="ghostping:activate"
+        )
+
+    async def callback(self, interaction: discord.Interaction):
+        if interaction.user.id != self.panel.owner_id:
+            await interaction.response.send_message("❌ Ce panel ne t'appartient pas.", ephemeral=True)
+            return
+
+        if not interaction.user.guild_permissions.administrator:
+            await interaction.response.send_message("❌ Réservé aux administrateurs.", ephemeral=True)
+            return
+
+        if not self.panel.selected_channel_id or not self.panel.selected_interval:
+            await interaction.response.send_message(
+                "❌ Choisis d'abord **le salon** et **la fréquence**.",
+                ephemeral=True
+            )
+            return
+
+        channel = interaction.guild.get_channel(self.panel.selected_channel_id)
+        if not isinstance(channel, discord.TextChannel):
+            await interaction.response.send_message("❌ Le salon sélectionné est introuvable.", ephemeral=True)
+            return
+
+        interval = self.panel.selected_interval
+        hours = GHOSTPING_INTERVALS[interval]
+        ghostping_config[str(interaction.guild.id)] = {
+            "channel_id": channel.id,
+            "interval": interval,
+            "interval_hours": hours,
+            "next_run": (discord.utils.utcnow() + timedelta(hours=hours)).timestamp()
+        }
+        save_ghostping_config()
+
+        await interaction.response.edit_message(view=self.panel.rebuild(saved=True))
+
+
+class GhostPingDisableButton(discord.ui.Button):
+    def __init__(self, panel):
+        self.panel = panel
+        super().__init__(
+            label="Désactiver",
+            emoji="⛔",
+            style=discord.ButtonStyle.danger,
+            custom_id="ghostping:disable"
+        )
+
+    async def callback(self, interaction: discord.Interaction):
+        if interaction.user.id != self.panel.owner_id:
+            await interaction.response.send_message("❌ Ce panel ne t'appartient pas.", ephemeral=True)
+            return
+
+        if not interaction.user.guild_permissions.administrator:
+            await interaction.response.send_message("❌ Réservé aux administrateurs.", ephemeral=True)
+            return
+
+        ghostping_config.pop(str(interaction.guild.id), None)
+        save_ghostping_config()
+        await interaction.response.edit_message(view=self.panel.rebuild(disabled=True))
+
+
+class GhostPingPanel(discord.ui.LayoutView):
+    def __init__(self, owner_id, guild, selected_channel_id=None, selected_interval=None, notice=None):
+        super().__init__(timeout=600)
+        self.owner_id = owner_id
+        self.guild = guild
+        self.selected_channel_id = selected_channel_id
+        self.selected_interval = selected_interval
+        self.notice = notice
+        self._build()
+
+    def _status_text(self):
+        cfg = ghostping_config.get(str(self.guild.id))
+        if not cfg:
+            return "🔴 **Désactivé**"
+        channel_id = cfg.get("channel_id")
+        hours = cfg.get("interval_hours")
+        return f"🟢 **Activé** • <#{channel_id}> • toutes les **{hours}h**"
+
+    def _build(self):
+        channel_text = f"<#{self.selected_channel_id}>" if self.selected_channel_id else "*Aucun salon sélectionné*"
+        interval_text = f"Toutes les **{GHOSTPING_INTERVALS[self.selected_interval]} heures**" if self.selected_interval else "*Aucune fréquence sélectionnée*"
+
+        container = discord.ui.Container(accent_color=0xED4245)
+        container.add_item(discord.ui.TextDisplay(
+            "# 👻 CONFIGURATION GHOST PING\n"
+            "Configure l'envoi automatique de `@everyone`. Le message est supprimé immédiatement après son envoi."
+        ))
+        container.add_item(discord.ui.Separator())
+        container.add_item(discord.ui.TextDisplay(
+            f"### 📢 Salon sélectionné\n{channel_text}\n\n"
+            f"### ⏰ Fréquence\n{interval_text}\n\n"
+            f"### 🛡️ État actuel\n{self._status_text()}"
+        ))
+        if self.notice:
+            container.add_item(discord.ui.Separator())
+            container.add_item(discord.ui.TextDisplay(self.notice))
+
+        container.add_item(discord.ui.Separator())
+        container.add_item(discord.ui.TextDisplay("### 1️⃣ Dans quel salon ghost ping ?"))
+        container.add_item(discord.ui.ActionRow(GhostPingChannelSelect(self)))
+        container.add_item(discord.ui.TextDisplay("### 2️⃣ Tous les combien de temps ?"))
+        container.add_item(discord.ui.ActionRow(GhostPingIntervalSelect(self)))
+        container.add_item(discord.ui.Separator())
+        container.add_item(discord.ui.ActionRow(
+            GhostPingActivateButton(self),
+            GhostPingDisableButton(self)
+        ))
+        container.add_item(discord.ui.TextDisplay(
+            "-# 🔔 Le bot doit avoir la permission de mentionner @everyone et d'envoyer des messages dans le salon choisi."
+        ))
+        self.add_item(container)
+
+    def rebuild(self, saved=False, disabled=False):
+        notice = None
+        if saved:
+            notice = "✅ **Configuration enregistrée.** Le ghost ping automatique est maintenant actif."
+        elif disabled:
+            notice = "⛔ **Ghost ping désactivé** sur ce serveur."
+        return GhostPingPanel(
+            owner_id=self.owner_id,
+            guild=self.guild,
+            selected_channel_id=self.selected_channel_id,
+            selected_interval=self.selected_interval,
+            notice=notice
+        )
+
+
+@bot.command(name="ghostping")
+@commands.has_permissions(administrator=True)
+async def ghostping(ctx):
+    """Ouvre le panel Components V2 de configuration du ghost ping."""
+    if ctx.guild is None:
+        return
+
+    cfg = ghostping_config.get(str(ctx.guild.id), {})
+    selected_channel_id = cfg.get("channel_id")
+    selected_interval = cfg.get("interval")
+
+    panel = GhostPingPanel(
+        owner_id=ctx.author.id,
+        guild=ctx.guild,
+        selected_channel_id=selected_channel_id,
+        selected_interval=selected_interval
+    )
+    await ctx.send(view=panel)
+
+
 @bot.tree.command(name="setghostping", description="Configure le ghost ping automatique @everyone")
 @discord.app_commands.describe(
     salon="Salon dans lequel envoyer le ghost ping",
