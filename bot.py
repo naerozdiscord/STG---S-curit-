@@ -8,7 +8,7 @@ from collections import defaultdict, deque
 from pathlib import Path
 from dotenv import load_dotenv
 
-from discord.ext import commands
+from discord.ext import commands, tasks
 from discord.utils import get
 from discord import ui
 from discord.ui import View, Button, button
@@ -1831,10 +1831,145 @@ class ProofReviewView(discord.ui.View):
 
 
 
+# ============================================================
+# GHOST PING AUTOMATIQUE - /setghostping
+# ============================================================
+GHOSTPING_CONFIG_FILE = Path(__file__).parent / "ghostping_config.json"
+GHOSTPING_INTERVALS = {"2h": 2, "5h": 5, "10h": 10, "24h": 24}
+
+
+def load_ghostping_config():
+    try:
+        if GHOSTPING_CONFIG_FILE.exists():
+            raw = json.loads(GHOSTPING_CONFIG_FILE.read_text(encoding="utf-8"))
+            return {str(gid): cfg for gid, cfg in raw.items() if isinstance(cfg, dict)}
+    except (OSError, json.JSONDecodeError, TypeError, ValueError) as error:
+        print(f"⚠️ Configuration ghost ping non chargée : {error}")
+    return {}
+
+
+ghostping_config = load_ghostping_config()
+
+
+def save_ghostping_config():
+    try:
+        GHOSTPING_CONFIG_FILE.write_text(
+            json.dumps(ghostping_config, indent=2, ensure_ascii=False),
+            encoding="utf-8"
+        )
+    except OSError as error:
+        print(f"⚠️ Configuration ghost ping non enregistrée : {error}")
+
+
+@bot.tree.command(name="setghostping", description="Configure le ghost ping automatique @everyone")
+@discord.app_commands.describe(
+    salon="Salon dans lequel envoyer le ghost ping",
+    duree="Fréquence du ghost ping",
+    activer="Active ou désactive le ghost ping"
+)
+@discord.app_commands.choices(duree=[
+    discord.app_commands.Choice(name="Toutes les 2 heures", value="2h"),
+    discord.app_commands.Choice(name="Toutes les 5 heures", value="5h"),
+    discord.app_commands.Choice(name="Toutes les 10 heures", value="10h"),
+    discord.app_commands.Choice(name="Toutes les 24 heures", value="24h"),
+])
+@discord.app_commands.default_permissions(administrator=True)
+@discord.app_commands.guild_only()
+async def setghostping(
+    interaction: discord.Interaction,
+    salon: discord.TextChannel,
+    duree: discord.app_commands.Choice[str],
+    activer: bool
+):
+    if not interaction.user.guild_permissions.administrator:
+        await interaction.response.send_message("❌ Réservé aux administrateurs.", ephemeral=True)
+        return
+
+    guild_id = str(interaction.guild.id)
+
+    if not activer:
+        ghostping_config.pop(guild_id, None)
+        save_ghostping_config()
+        await interaction.response.send_message(
+            "⛔ Ghost ping désactivé sur ce serveur.",
+            ephemeral=True
+        )
+        return
+
+    hours = GHOSTPING_INTERVALS[duree.value]
+    ghostping_config[guild_id] = {
+        "channel_id": salon.id,
+        "interval": duree.value,
+        "interval_hours": hours,
+        "next_run": (discord.utils.utcnow() + timedelta(hours=hours)).timestamp()
+    }
+    save_ghostping_config()
+
+    await interaction.response.send_message(
+        f"✅ Ghost ping activé dans {salon.mention}.\n"
+        f"⏱️ Fréquence : **toutes les {hours}h**.\n"
+        "Le bot enverra `@everyone` puis supprimera immédiatement le message.",
+        ephemeral=True
+    )
+
+
+@tasks.loop(minutes=1)
+async def ghostping_scheduler():
+    now = discord.utils.utcnow().timestamp()
+    changed = False
+
+    for guild_id, cfg in list(ghostping_config.items()):
+        try:
+            next_run = float(cfg.get("next_run", 0))
+            if now < next_run:
+                continue
+
+            guild = bot.get_guild(int(guild_id))
+            channel = guild.get_channel(int(cfg.get("channel_id", 0))) if guild else None
+            hours = int(cfg.get("interval_hours", 0))
+
+            if guild is None or not isinstance(channel, discord.TextChannel) or hours not in (2, 5, 10, 24):
+                continue
+
+            try:
+                message = await channel.send(
+                    "@everyone",
+                    allowed_mentions=discord.AllowedMentions(everyone=True, roles=False, users=False)
+                )
+                await message.delete()
+            except (discord.Forbidden, discord.HTTPException) as error:
+                print(f"⚠️ Ghost ping impossible dans {guild.name}: {error}")
+
+            cfg["next_run"] = (discord.utils.utcnow() + timedelta(hours=hours)).timestamp()
+            changed = True
+        except (TypeError, ValueError):
+            continue
+
+    if changed:
+        save_ghostping_config()
+
+
+@ghostping_scheduler.before_loop
+async def before_ghostping_scheduler():
+    await bot.wait_until_ready()
+
+
+
 
 
 @bot.event
 async def on_ready():
+    if not ghostping_scheduler.is_running():
+        ghostping_scheduler.start()
+
+    if not getattr(bot, "_slash_commands_synced", False):
+        try:
+            synced = await bot.tree.sync()
+            bot._slash_commands_synced = True
+            print(f"✅ Commandes slash synchronisées : {len(synced)}")
+        except Exception as error:
+            print(f"⚠️ Synchronisation slash impossible : {error}")
+
     print("================================")
     print(f"✅ Bot connecté : {bot.user}")
     print(f"🆔 ID : {bot.user.id}")
